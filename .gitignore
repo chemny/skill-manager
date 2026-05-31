@@ -1,0 +1,33 @@
+# Runtime state
+.agent-skill-manager/
+*.db
+*.db-shm
+*.db-wal
+reports/
+backups/
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node/browser test scratch
+node_modules/
+npm-debug.log*
+playwright-report/
+test-results/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Local env
+.env
+.env.*
+!.env.example
