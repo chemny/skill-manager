@@ -8,7 +8,7 @@ I built Agent Skill Manager because my local skills folder kept growing, and at 
 
 This tool scans local skill directories, groups the same skill across platforms, shows usage and health information, and gives you a small local admin page for day-to-day cleanup.
 
-![Agent Skill Manager dashboard](./assets/agent-skill-manager-dashboard.png)
+![Agent Skill Manager dashboard](https://raw.githubusercontent.com/chemny/agent-skill-manager/main/assets/agent-skill-manager-dashboard.png)
 
 ## What You Can Use It For
 

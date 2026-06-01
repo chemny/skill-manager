@@ -8,7 +8,7 @@
 
 Agent Skill Manager 做的事情就是把这些信息拉到一个本地后台里。它会扫描本地目录，按名称合并不同平台里的同一个 skill，展示版本、来源、状态、健康分、使用次数，并提供更新、停用、删除和导出报告这些日常管理操作。
 
-![Agent Skill Manager 管理后台](./assets/agent-skill-manager-dashboard.png)
+![Agent Skill Manager 管理后台](https://raw.githubusercontent.com/chemny/agent-skill-manager/main/assets/agent-skill-manager-dashboard.png)
 
 ## 可以用它做什么？
 
