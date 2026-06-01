@@ -1,8 +1,8 @@
 ---
 name: skill-manager
 description: Use when the user wants to list, search, inspect, audit, update-check, activate, deactivate, report on, or manage locally installed agent skills and adjacent capabilities across Codex, Claude Code, OpenClaw, Hermes, and configurable local roots.
-version: 1.0.0
-local_updated_at: 2026-05-31T00:00:00+08:00
+version: 1.1.0
+local_updated_at: 2026-06-02T00:00:00+08:00
 ---
 
 # Agent Skill Manager
@@ -163,7 +163,7 @@ github_url: https://github.com/owner/repo
 github_hash: commit-or-version-hash
 github_ref: main
 github_path: skills/example/SKILL.md
-local_updated_at: 2026-05-31T00:00:00+08:00
+local_updated_at: 2026-06-02T00:00:00+08:00
 ```
 
 ## Reports
