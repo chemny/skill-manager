@@ -133,12 +133,12 @@ Health checks currently validate:
 
 - path exists
 - `SKILL.md` exists for normalized skill directories
-- GitHub-backed items have `github_hash`
+- remote-backed items have source metadata when available
 - version is known when possible
 
 ## Version Checks
 
-GitHub-backed capabilities are detected from `github_url` and `github_hash` in `SKILL.md` frontmatter or `_meta.json`.
+Remote-backed capabilities are detected from repository metadata in `SKILL.md` frontmatter or `_meta.json`, including GitHub, GitLab, Gitee, and skills.sh URLs.
 
 ```bash
 asm check-updates
@@ -150,7 +150,8 @@ Automatic overwrite is intentionally conservative. The update command reports lo
 
 The HTML admin provides a reviewed update flow:
 
-- Check GitHub-backed metadata first, including `github_url` and GitHub URLs found in `homepage` or `repository`.
+- Check bound repository metadata first, including GitHub, GitLab, Gitee, and skills.sh URLs found in `github_url`, `homepage`, or `repository`.
+- If no bound source is usable, search SkillsMP, then `find-skills` / skills.sh.
 - If a newer remote version is found, confirm before backing up and replacing every selected local copy.
 - If no newer remote version is found but local copies have different versions, offer to unify all local copies to the highest local version.
 - Builtin/plugin cache capabilities are not updated or deleted from the UI.
@@ -199,7 +200,7 @@ The dashboard supports:
 - usage visibility
 - usage event viewer
 - source management
-- install skills from GitHub, GitLab, or zip links
+- install skills from GitHub, GitLab, Gitee, skills.sh, or zip links
 - smart upgrade checks
 - soft activate
 - soft deactivate

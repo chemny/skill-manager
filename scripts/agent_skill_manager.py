@@ -13,6 +13,7 @@ import concurrent.futures
 import datetime as dt
 import hashlib
 import html
+import http.client
 import http.server
 import json
 import os
@@ -274,6 +275,12 @@ def remote_source_from_url(url: str) -> str:
         return "github"
     if "gitlab.com" in host:
         return "gitlab"
+    if "gitee.com" in host:
+        return "gitee"
+    if "skills.sh" in host:
+        return "skills.sh"
+    if "skillsmp.com" in host:
+        return "skillsmp"
     if "bitbucket.org" in host:
         return "bitbucket"
     if "vercel.com" in host:
@@ -321,7 +328,7 @@ def management_scope_for_row(row: Dict[str, Any]) -> str:
         metadata = {}
     if source == "builtin" or is_builtin_path(path) or metadata.get("builtin") is True or metadata.get("type") == "builtin":
         return "builtin_observe_only"
-    if source in ("github", "gitlab", "bitbucket", "vercel") or github_url:
+    if source in ("github", "gitlab", "gitee", "skills.sh", "skillsmp", "bitbucket", "vercel") or github_url:
         return "managed_remote"
     if source == "local":
         return "managed_local"
@@ -1726,6 +1733,37 @@ def parse_gitlab_url(url: str) -> Optional[Dict[str, str]]:
     return info
 
 
+def parse_gitee_url(url: str) -> Optional[Dict[str, str]]:
+    if not url:
+        return None
+    parsed = urllib.parse.urlparse(url)
+    if parsed.netloc.lower() not in ("gitee.com", "www.gitee.com"):
+        return None
+    path = parsed.path.strip("/")
+    if not path:
+        return None
+    repo_part = path
+    marker = ""
+    tail = ""
+    for token in ("/tree/", "/blob/"):
+        if token in path:
+            repo_part, tail = path.split(token, 1)
+            marker = token
+            break
+    repo_part = re.sub(r"\.git$", "", repo_part)
+    parts = [part for part in repo_part.split("/") if part]
+    if len(parts) < 2:
+        return None
+    owner, repo = parts[0], parts[1]
+    info = {"provider": "gitee", "owner": owner, "repo": repo, "ref": "", "path": ""}
+    if marker and tail:
+        pieces = tail.split("/")
+        if pieces:
+            info["ref"] = pieces[0]
+            info["path"] = "/".join(pieces[1:])
+    return info
+
+
 def parse_skills_sh_url(url: str) -> Optional[Dict[str, str]]:
     if not url:
         return None
@@ -1814,7 +1852,7 @@ def remote_info_for_cap(row: sqlite3.Row) -> Optional[Dict[str, str]]:
     ]
     for url in urls:
         text = str(url or "")
-        info = parse_github_url(text) or parse_gitlab_url(text) or parse_skills_sh_url(text)
+        info = parse_github_url(text) or parse_gitlab_url(text) or parse_gitee_url(text) or parse_skills_sh_url(text)
         if info:
             return info
     return None
@@ -1893,9 +1931,50 @@ def download_gitlab_archive(info: Dict[str, str], branch: str, tmpdir: Path) -> 
     return download_zip_archive(url, tmpdir)
 
 
+def git_repo_url(info: Dict[str, str]) -> str:
+    if info.get("provider") == "gitee":
+        return f"https://gitee.com/{info['owner']}/{info['repo']}.git"
+    raise ValueError(f"Unsupported git provider: {info.get('provider')}")
+
+
+def clone_git_repository(url: str, tmpdir: Path, branch: str = "") -> Path:
+    target = tmpdir / "repo"
+    cmd = ["git", "clone", "--depth", "1"]
+    if branch:
+        cmd.extend(["--branch", branch])
+    cmd.extend([url, str(target)])
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=90, check=False)
+    if result.returncode != 0:
+        raise ValueError((result.stderr or result.stdout or "Git clone failed.").strip())
+    return target
+
+
+def current_git_branch(repo_root: Path, fallback: str = "") -> str:
+    result = subprocess.run(["git", "-C", str(repo_root), "branch", "--show-current"], capture_output=True, text=True, timeout=10, check=False)
+    value = result.stdout.strip()
+    return value or fallback or "HEAD"
+
+
+def latest_git_hash_for_ref(url: str, branch: str = "") -> str:
+    ref = f"refs/heads/{branch}" if branch and branch != "HEAD" else "HEAD"
+    result = subprocess.run(["git", "ls-remote", url, ref], capture_output=True, text=True, timeout=30, check=False)
+    if result.returncode != 0:
+        return ""
+    first = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
+    return first.split()[0] if first else ""
+
+
+def download_gitee_repository(info: Dict[str, str], branch: str, tmpdir: Path) -> Path:
+    repo_root = clone_git_repository(git_repo_url(info), tmpdir, branch)
+    info["resolved_ref"] = current_git_branch(repo_root, branch)
+    return repo_root
+
+
 def download_remote_archive(info: Dict[str, str], branch: str, tmpdir: Path) -> Path:
     if info.get("provider") == "gitlab":
         return download_gitlab_archive(info, branch, tmpdir)
+    if info.get("provider") == "gitee":
+        return download_gitee_repository(info, branch, tmpdir)
     return download_github_archive(info, branch, tmpdir)
 
 
@@ -1905,6 +1984,8 @@ def latest_commit_for_repo_path(info: Dict[str, str], branch: str, rel_path: str
         query = f"ref_name={urllib.parse.quote(branch)}&path={urllib.parse.quote(rel_path, safe='')}&per_page=1"
         commits = gitlab_json(f"https://gitlab.com/api/v4/projects/{project}/repository/commits?{query}")
         return commits[0]["id"] if commits else ""
+    if info.get("provider") == "gitee":
+        return latest_git_hash_for_ref(git_repo_url(info), branch)
     repo_api = f"https://api.github.com/repos/{info['owner']}/{info['repo']}"
     encoded = urllib.parse.quote(rel_path, safe="")
     commits = github_json(f"{repo_api}/commits?sha={urllib.parse.quote(branch)}&path={encoded}&per_page=1")
@@ -1951,7 +2032,7 @@ def install_source_from_url(url: str, tmpdir: Path) -> Tuple[Path, Dict[str, str
         branch = info["ref"] or github_json(repo_api)["default_branch"]
         info["ref"] = branch
         root = download_github_archive(info, branch, tmpdir)
-        return root, {"source_type": "github", "source_url": f"https://github.com/{info['owner']}/{info['repo']}", "source_ref": branch, "source_path": info.get("path", "")}
+        return root, {"source_type": "github", "source_url": f"https://github.com/{info['owner']}/{info['repo']}", "source_ref": branch, "source_path": info.get("path", ""), "source_skill": info.get("skill", "")}
     gitlab = parse_gitlab_url(clean)
     if gitlab:
         project = urllib.parse.quote(gitlab["project"], safe="")
@@ -1960,16 +2041,22 @@ def install_source_from_url(url: str, tmpdir: Path) -> Tuple[Path, Dict[str, str
         gitlab["ref"] = branch
         root = download_gitlab_archive(gitlab, branch, tmpdir)
         return root, {"source_type": "gitlab", "source_url": f"https://gitlab.com/{gitlab['project']}", "source_ref": branch, "source_path": gitlab.get("path", "")}
+    gitee = parse_gitee_url(clean)
+    if gitee:
+        root = download_gitee_repository(gitee, gitee.get("ref", ""), tmpdir)
+        branch = gitee.get("resolved_ref") or gitee.get("ref", "")
+        return root, {"source_type": "gitee", "source_url": f"https://gitee.com/{gitee['owner']}/{gitee['repo']}", "source_ref": branch, "source_path": gitee.get("path", "")}
     parsed = urllib.parse.urlparse(clean)
     if parsed.scheme in ("http", "https") and parsed.path.lower().endswith(".zip"):
         root = download_zip_archive(clean, tmpdir)
         return root, {"source_type": remote_source_from_url(clean) or "zip", "source_url": clean, "source_ref": "", "source_path": ""}
-    raise ValueError("Only GitHub, GitLab, and direct .zip links are supported")
+    raise ValueError("Only GitHub, GitLab, Gitee, skills.sh, and direct .zip links are supported")
 
 
-def skill_install_candidates(repo_root: Path, preferred_path: str = "") -> List[Dict[str, Any]]:
+def skill_install_candidates(repo_root: Path, preferred_path: str = "", preferred_name: str = "") -> List[Dict[str, Any]]:
     preferred = preferred_path.strip("/")
     preferred_dir = preferred[:-len("/SKILL.md")] if preferred.endswith("/SKILL.md") else preferred
+    preferred_normalized = normalized_skill_name(preferred_name)
     candidates: List[Dict[str, Any]] = []
     for skill_file in sorted(repo_root.rglob("SKILL.md")):
         folder = skill_file.parent
@@ -1978,6 +2065,9 @@ def skill_install_candidates(repo_root: Path, preferred_path: str = "") -> List[
             continue
         metadata = parse_frontmatter(skill_file)
         name = str(metadata.get("name") or folder.name)
+        if preferred_normalized and not preferred_dir:
+            if normalized_skill_name(name) != preferred_normalized and normalized_skill_name(folder.name) != preferred_normalized:
+                continue
         candidates.append(
             {
                 "name": name,
@@ -1997,7 +2087,7 @@ def preview_skill_install(url: str, target_root: str) -> Dict[str, Any]:
     root = expand_root(target_root)
     with tempfile.TemporaryDirectory(prefix="asm-install-preview-") as tmp:
         repo_root, source = install_source_from_url(url, Path(tmp))
-        candidates = skill_install_candidates(repo_root, source.get("source_path", ""))
+        candidates = skill_install_candidates(repo_root, source.get("source_path", ""), source.get("source_skill", ""))
     if not candidates:
         raise ValueError("No SKILL.md was found in this link")
     return {"target_root": str(root), "source": source, "candidates": candidates}
@@ -2010,7 +2100,7 @@ def install_skill_from_url(url: str, target_root: str, remote_path: str, overwri
     target_root_path.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="asm-install-") as tmp:
         repo_root, source = install_source_from_url(url, Path(tmp))
-        candidates = skill_install_candidates(repo_root, source.get("source_path", ""))
+        candidates = skill_install_candidates(repo_root, source.get("source_path", ""), source.get("source_skill", ""))
         if remote_path:
             candidates = [candidate for candidate in candidates if candidate["remote_path"] == remote_path]
         if not candidates:
@@ -2126,7 +2216,72 @@ def strip_ansi(text: str) -> str:
 
 def is_rate_limit_error(exc: BaseException) -> bool:
     text = str(exc).lower()
-    return "rate limit" in text or "http error 403" in text
+    return "rate limit" in text or "quota exceeded" in text or "http error 403" in text or "http error 429" in text
+
+
+def read_http_text(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 20, retries: int = 2) -> str:
+    request_headers = {"User-Agent": APP_NAME, "Accept": "application/json"}
+    if headers:
+        request_headers.update(headers)
+    last_error: Optional[BaseException] = None
+    for _attempt in range(retries + 1):
+        req = urllib.request.Request(url, headers=request_headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                return response.read().decode("utf-8", "ignore")
+        except http.client.IncompleteRead as exc:
+            last_error = exc
+            if exc.partial:
+                return exc.partial.decode("utf-8", "ignore")
+        except urllib.error.URLError as exc:
+            last_error = exc
+            if "CERTIFICATE_VERIFY_FAILED" not in str(exc):
+                continue
+            try:
+                with urllib.request.urlopen(req, timeout=timeout, context=ssl._create_unverified_context()) as response:
+                    return response.read().decode("utf-8", "ignore")
+            except http.client.IncompleteRead as inner:
+                last_error = inner
+                if inner.partial:
+                    return inner.partial.decode("utf-8", "ignore")
+            except urllib.error.URLError as inner:
+                last_error = inner
+    if last_error:
+        raise last_error
+    raise ValueError(f"Unable to read URL: {url}")
+
+
+def discover_remote_with_skillsmp(skill_name: str) -> Optional[Dict[str, str]]:
+    query = urllib.parse.urlencode({"q": skill_name, "limit": "8", "sortBy": "recent"})
+    try:
+        payload = json.loads(read_http_text(f"https://skillsmp.com/api/v1/skills/search?{query}", retries=2))
+    except Exception:
+        return None
+    skills = ((payload.get("data") or {}).get("skills") or []) if isinstance(payload, dict) else []
+    candidates: List[Tuple[int, Dict[str, str]]] = []
+    wanted = normalized_skill_name(skill_name)
+    for item in skills:
+        if not isinstance(item, dict):
+            continue
+        github_url = str(item.get("githubUrl") or item.get("github_url") or "")
+        info = parse_github_url(github_url)
+        if not info:
+            continue
+        remote_name = str(item.get("name") or info.get("path") or "")
+        score = 0
+        if normalized_skill_name(remote_name) == wanted:
+            score += 100
+        if wanted and wanted in normalized_skill_name(remote_name):
+            score += 30
+        if info.get("path"):
+            score += 10
+        if score > 0:
+            if remote_name:
+                info["skill"] = remote_name
+            candidates.append((score, info))
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda item: item[0], reverse=True)[0][1]
 
 
 def discover_remote_with_find_skills(skill_name: str) -> Optional[Dict[str, str]]:
@@ -2162,7 +2317,7 @@ def remote_error_summary(provider: str, exc: BaseException) -> Dict[str, str]:
     status = "rate_limited" if is_rate_limit_error(exc) else "error"
     if isinstance(exc, urllib.error.HTTPError) and exc.code == 404:
         status = "not_found"
-    label = {"github": "GitHub", "gitlab": "GitLab", "find-skills": "find-skills"}.get(provider, provider or "remote")
+    label = {"github": "GitHub", "gitlab": "GitLab", "gitee": "Gitee", "skillsmp": "SkillsMP", "find-skills": "find-skills"}.get(provider, provider or "remote")
     return {"source": label, "status": status, "message": str(exc)}
 
 
@@ -2262,7 +2417,7 @@ def get_remote_snapshot(registry: Registry, skill_name: str, fresh_only: bool = 
 
 def remote_info_from_snapshot(snapshot: Dict[str, Any]) -> Optional[Dict[str, str]]:
     source_url = str(snapshot.get("source_url") or "")
-    info = parse_github_url(source_url) or parse_gitlab_url(source_url) or parse_skills_sh_url(source_url)
+    info = parse_github_url(source_url) or parse_gitlab_url(source_url) or parse_gitee_url(source_url) or parse_skills_sh_url(source_url)
     if not info:
         return None
     info["ref"] = str(snapshot.get("source_ref") or info.get("ref") or "")
@@ -2313,6 +2468,10 @@ def fetch_remote_snapshot_for_info(
         branch = row["github_ref"] or info.get("ref") or gitlab_json(project_api)["default_branch"]
         source_url = f"https://gitlab.com/{info['project']}"
         source_label = info["project"]
+    elif provider == "gitee":
+        branch = row["github_ref"] or info.get("ref") or ""
+        source_url = f"https://gitee.com/{info['owner']}/{info['repo']}"
+        source_label = f"{info['owner']}/{info['repo']}"
     else:
         repo_api = f"https://api.github.com/repos/{info['owner']}/{info['repo']}"
         branch = row["github_ref"] or info.get("ref") or github_json(repo_api)["default_branch"]
@@ -2320,6 +2479,7 @@ def fetch_remote_snapshot_for_info(
         source_label = f"{info['owner']}/{info['repo']}"
     with tempfile.TemporaryDirectory(prefix="asm-update-") as tmp:
         repo_root = download_remote_archive(info, branch, Path(tmp))
+        branch = info.get("resolved_ref") or branch
         remote_dir = find_remote_skill_dir(repo_root, row["name"], Path(row["path"]).name, info.get("skill", ""))
         if not remote_dir:
             raise ValueError(f"No cloud version was found. Repository exists, but no matching SKILL.md directory was found in {source_label}.")
@@ -2535,9 +2695,44 @@ def check_group_update(ids: Sequence[str], force_remote: bool = False, remember_
         except (urllib.error.HTTPError, urllib.error.URLError, ValueError) as exc:
             remote_errors.append(remote_error_summary(info.get("provider", "remote"), exc))
 
+    found_any_remote_candidate = False
     try:
+        info = discover_remote_with_skillsmp(primary["name"])
+        if info:
+            found_any_remote_candidate = True
+            try:
+                snapshot = fetch_remote_snapshot_for_info(primary, info, "skillsmp", registry)
+            except (urllib.error.HTTPError, urllib.error.URLError, ValueError) as exc:
+                remote_errors.append(remote_error_summary("skillsmp", exc))
+                snapshot = None
+            if snapshot:
+                registry.record_update_check(
+                    primary["id"],
+                    "remote_checked",
+                    primary["github_hash"] or "",
+                    snapshot.get("remote_hash", ""),
+                    remote_cache_payload(
+                        "remote_checked",
+                        "Remote version snapshot refreshed from SkillsMP.",
+                        repo=snapshot.get("source_url", ""),
+                        branch=snapshot.get("source_ref", ""),
+                        remote_version=snapshot.get("remote_version", "unknown"),
+                        remote_hash=snapshot.get("remote_hash", ""),
+                        remote_path=snapshot.get("source_path", ""),
+                    ),
+                )
+                result = snapshot_result(rows, local_versions, max_local, snapshot, skipped)
+                result["cache_hit"] = False
+                result["message"] = "Remote version checked."
+                if remote_errors:
+                    result["remote_errors"] = remote_errors
+                if remember_terminal:
+                    remember_update_result(registry, primary["id"], result, primary["github_hash"] or "")
+                return result
+
         info = discover_remote_with_find_skills(primary["name"])
         if info:
+            found_any_remote_candidate = True
             try:
                 snapshot = fetch_remote_snapshot_for_info(primary, info, "find-skills", registry)
             except (urllib.error.HTTPError, urllib.error.URLError, ValueError) as exc:
@@ -2572,8 +2767,8 @@ def check_group_update(ids: Sequence[str], force_remote: bool = False, remember_
         if remote_errors and any(error.get("status") == "rate_limited" for error in remote_errors):
             cache_status = "remote_error"
             message = "No newer version was found. Some remote sources were temporarily unavailable."
-        elif not info:
-            message = "No newer version was found. No bound cloud source or find-skills candidate was found."
+        elif not found_any_remote_candidate:
+            message = "No newer version was found. No bound source, SkillsMP result, or find-skills candidate was found."
         registry.record_update_check(
             primary["id"],
             cache_status,
@@ -2658,6 +2853,8 @@ def apply_group_update(ids: Sequence[str], mode: str) -> Dict[str, Any]:
         if info.get("provider") == "gitlab":
             project = urllib.parse.quote(info["project"], safe="")
             branch = (snapshot or {}).get("source_ref") or base["github_ref"] or info["ref"] or gitlab_json(f"https://gitlab.com/api/v4/projects/{project}")["default_branch"]
+        elif info.get("provider") == "gitee":
+            branch = (snapshot or {}).get("source_ref") or base["github_ref"] or info["ref"] or ""
         else:
             repo_api = f"https://api.github.com/repos/{info['owner']}/{info['repo']}"
             branch = (snapshot or {}).get("source_ref") or base["github_ref"] or info["ref"] or github_json(repo_api)["default_branch"]

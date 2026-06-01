@@ -4,9 +4,11 @@ All notable changes to Agent Skill Manager are documented here.
 
 ## Unreleased
 
-- Added a dashboard install flow for installing skills from GitHub, GitLab, or direct zip links.
+- Added a dashboard install flow for installing skills from GitHub, GitLab, Gitee, skills.sh, or direct zip links.
 - Added install preview so repositories with multiple `SKILL.md` files can be reviewed before installation.
 - Added backup-and-replace support when installing over an existing local skill folder.
+- Added SkillsMP as a remote discovery fallback before `find-skills`.
+- Updated remote checks so one failed source falls through to the next source before local version unification.
 
 ## 1.0.0 - 2026-05-31
 
