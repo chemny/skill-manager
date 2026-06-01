@@ -18,6 +18,7 @@ Agent Skill Manager 做的事情就是把这些信息拉到一个本地后台里
 - 从本地 session logs 中导入真实的 30 天使用次数。
 - 根据状态、metadata 和文件结构计算健康分。
 - 添加和管理自己的 skills 来源目录。
+- 从 GitHub、GitLab 或 zip 链接安装新的 skills。
 - 导出一份简单的管理报告。
 - 检查可能的更新，并在本地版本不一致时统一到较新版本。
 - 对 skills 做停用或删除，删除前会确认并备份。
@@ -116,6 +117,7 @@ powershell -ExecutionPolicy Bypass -File ".\scripts\skill-manager.ps1" -Action W
 - 只按名称搜索；
 - 查看详情和使用记录；
 - 管理自定义来源目录；
+- 从 GitHub、GitLab 或 zip 链接安装 skill；
 - 带 24 小时缓存的智能升级检测；
 - 本地版本统一；
 - 软启用和软停用；

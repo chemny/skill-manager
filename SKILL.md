@@ -199,6 +199,7 @@ The dashboard supports:
 - usage visibility
 - usage event viewer
 - source management
+- install skills from GitHub, GitLab, or zip links
 - smart upgrade checks
 - soft activate
 - soft deactivate

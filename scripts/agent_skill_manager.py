@@ -48,6 +48,7 @@ REMOTE_UPDATE_CACHE_TTL = dt.timedelta(hours=24)
 SMART_UPGRADE_JOBS: Dict[str, Dict[str, Any]] = {}
 SMART_UPGRADE_LOCK = threading.Lock()
 SMART_UPGRADE_SNAPSHOT_KEY = "latest"
+SMART_UPGRADE_SCHEMA_VERSION = 2
 UPDATE_BUTTON_DISABLED_STATUSES = {"updated", "latest", "no_cloud", "remote_error", "unsupported"}
 
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -630,6 +631,8 @@ class Registry:
         try:
             result = json.loads(row["result_json"] or "{}")
         except json.JSONDecodeError:
+            return None
+        if result.get("schema_version") != SMART_UPGRADE_SCHEMA_VERSION:
             return None
         result["snapshot_checked_at"] = row["checked_at"]
         result["snapshot_cache_hit"] = True
@@ -1233,6 +1236,8 @@ def smart_upgrade_check(progress: Optional[Any] = None, use_cache: bool = True) 
                 return name, candidates, summary, payload("update", "medium", name, candidates, f"Local versions differ: {versions}.")
             return name, candidates, summary, None
         except Exception as exc:
+            if is_rate_limit_error(exc):
+                return name, candidates, {"name": name, "status": "rate_limited", "message": "Remote update check was skipped because GitHub rate limit was reached."}, None
             return name, candidates, {"name": name, "status": "error", "message": str(exc)}, payload("metadata", "low", name, candidates, f"Update check failed: {exc}")
 
     checked_updates = 0
@@ -1311,6 +1316,7 @@ def smart_upgrade_check(progress: Optional[Any] = None, use_cache: bool = True) 
         counts[item["type"]] = counts.get(item["type"], 0) + 1
     registry.log_operation("smart-upgrade", "", {"items": len(deduped), "counts": counts, "updates_checked": len(update_results)})
     result = {
+        "schema_version": SMART_UPGRADE_SCHEMA_VERSION,
         "recommendations": deduped[:500],
         "counts": counts,
         "checked": {
@@ -1332,7 +1338,6 @@ def update_smart_job(job_id: str, **updates: Any) -> None:
         job.update(updates)
         job["updated_at"] = now_iso()
 
-
 def run_smart_upgrade_job(job_id: str) -> None:
     def progress(stage: str, current: str, index: int, total: int) -> None:
         update_smart_job(job_id, status="running", stage=stage, current=current, index=index, total=total)
@@ -1341,6 +1346,7 @@ def run_smart_upgrade_job(job_id: str) -> None:
         result = smart_upgrade_check(progress, use_cache=False)
         update_smart_job(job_id, status="done", stage="done", current="", result=result)
     except Exception as exc:
+        Registry().log_operation("smart-upgrade-error", job_id, {"error": str(exc)})
         update_smart_job(job_id, status="error", stage="error", current="", error=str(exc))
 
 
@@ -1697,11 +1703,46 @@ def parse_github_url(url: str) -> Optional[Dict[str, str]]:
     return info
 
 
+def parse_gitlab_url(url: str) -> Optional[Dict[str, str]]:
+    if not url:
+        return None
+    parsed = urllib.parse.urlparse(url)
+    if parsed.netloc.lower() not in ("gitlab.com", "www.gitlab.com"):
+        return None
+    path = parsed.path.strip("/")
+    if not path:
+        return None
+    repo_part, marker, tail = path.partition("/-/")
+    repo_part = re.sub(r"\.git$", "", repo_part)
+    if "/" not in repo_part:
+        return None
+    info = {"project": repo_part, "ref": "", "path": ""}
+    if marker and tail:
+        pieces = tail.split("/")
+        if pieces and pieces[0] in ("tree", "blob") and len(pieces) >= 2:
+            info["ref"] = pieces[1]
+            info["path"] = "/".join(pieces[2:])
+    return info
+
+
 def github_json(uri: str) -> Any:
     headers = {"User-Agent": APP_NAME, "Accept": "application/vnd.github+json"}
     token = os.environ.get("GITHUB_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(uri, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.URLError as exc:
+        if "CERTIFICATE_VERIFY_FAILED" not in str(exc):
+            raise
+        with urllib.request.urlopen(req, timeout=20, context=ssl._create_unverified_context()) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+
+def gitlab_json(uri: str) -> Any:
+    headers = {"User-Agent": APP_NAME, "Accept": "application/json"}
     req = urllib.request.Request(uri, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=20) as response:
@@ -1790,9 +1831,44 @@ def download_github_archive(info: Dict[str, str], branch: str, tmpdir: Path) -> 
     extract_dir = tmpdir / "repo"
     extract_dir.mkdir()
     with zipfile.ZipFile(archive) as zf:
-        zf.extractall(extract_dir)
+        safe_extract_zip(zf, extract_dir)
     roots = [path for path in extract_dir.iterdir() if path.is_dir()]
     return roots[0] if roots else extract_dir
+
+
+def safe_extract_zip(zf: zipfile.ZipFile, target_dir: Path) -> None:
+    root = target_dir.resolve()
+    for member in zf.infolist():
+        destination = (target_dir / member.filename).resolve()
+        if destination != root and root not in destination.parents:
+            raise ValueError(f"Unsafe archive path: {member.filename}")
+    zf.extractall(target_dir)
+
+
+def download_zip_archive(url: str, tmpdir: Path) -> Path:
+    headers = {"User-Agent": APP_NAME}
+    req = urllib.request.Request(url, headers=headers)
+    archive = tmpdir / "source.zip"
+    try:
+        with urllib.request.urlopen(req, timeout=60) as response:
+            archive.write_bytes(response.read())
+    except urllib.error.URLError as exc:
+        if "CERTIFICATE_VERIFY_FAILED" not in str(exc):
+            raise
+        with urllib.request.urlopen(req, timeout=60, context=ssl._create_unverified_context()) as response:
+            archive.write_bytes(response.read())
+    extract_dir = tmpdir / "source"
+    extract_dir.mkdir()
+    with zipfile.ZipFile(archive) as zf:
+        safe_extract_zip(zf, extract_dir)
+    roots = [path for path in extract_dir.iterdir() if path.is_dir()]
+    return roots[0] if len(roots) == 1 else extract_dir
+
+
+def download_gitlab_archive(info: Dict[str, str], branch: str, tmpdir: Path) -> Path:
+    project = urllib.parse.quote(info["project"], safe="")
+    url = f"https://gitlab.com/api/v4/projects/{project}/repository/archive.zip?sha={urllib.parse.quote(branch)}"
+    return download_zip_archive(url, tmpdir)
 
 
 def latest_commit_for_repo_path(info: Dict[str, str], branch: str, rel_path: str) -> str:
@@ -1819,6 +1895,115 @@ def find_remote_skill_dir(repo_root: Path, skill_name: str, local_folder: str) -
     if not candidates:
         return None
     return sorted(candidates, key=lambda item: item[0], reverse=True)[0][1]
+
+
+def safe_install_name(name: str) -> str:
+    value = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(name or "").strip()).strip(".-")
+    return value or "skill"
+
+
+def relative_posix(path: Path, root: Path) -> str:
+    return path.relative_to(root).as_posix()
+
+
+def install_source_from_url(url: str, tmpdir: Path) -> Tuple[Path, Dict[str, str]]:
+    clean = str(url or "").strip()
+    if not clean:
+        raise ValueError("URL is required")
+    info = parse_github_url(clean)
+    if info:
+        repo_api = f"https://api.github.com/repos/{info['owner']}/{info['repo']}"
+        branch = info["ref"] or github_json(repo_api)["default_branch"]
+        info["ref"] = branch
+        root = download_github_archive(info, branch, tmpdir)
+        return root, {"source_type": "github", "source_url": f"https://github.com/{info['owner']}/{info['repo']}", "source_ref": branch, "source_path": info.get("path", "")}
+    gitlab = parse_gitlab_url(clean)
+    if gitlab:
+        project = urllib.parse.quote(gitlab["project"], safe="")
+        project_api = f"https://gitlab.com/api/v4/projects/{project}"
+        branch = gitlab["ref"] or gitlab_json(project_api)["default_branch"]
+        gitlab["ref"] = branch
+        root = download_gitlab_archive(gitlab, branch, tmpdir)
+        return root, {"source_type": "gitlab", "source_url": f"https://gitlab.com/{gitlab['project']}", "source_ref": branch, "source_path": gitlab.get("path", "")}
+    parsed = urllib.parse.urlparse(clean)
+    if parsed.scheme in ("http", "https") and parsed.path.lower().endswith(".zip"):
+        root = download_zip_archive(clean, tmpdir)
+        return root, {"source_type": remote_source_from_url(clean) or "zip", "source_url": clean, "source_ref": "", "source_path": ""}
+    raise ValueError("Only GitHub, GitLab, and direct .zip links are supported")
+
+
+def skill_install_candidates(repo_root: Path, preferred_path: str = "") -> List[Dict[str, Any]]:
+    preferred = preferred_path.strip("/")
+    preferred_dir = preferred[:-len("/SKILL.md")] if preferred.endswith("/SKILL.md") else preferred
+    candidates: List[Dict[str, Any]] = []
+    for skill_file in sorted(repo_root.rglob("SKILL.md")):
+        folder = skill_file.parent
+        rel_dir = relative_posix(folder, repo_root)
+        if preferred_dir and rel_dir != preferred_dir and not rel_dir.startswith(preferred_dir.rstrip("/") + "/"):
+            continue
+        metadata = parse_frontmatter(skill_file)
+        name = str(metadata.get("name") or folder.name)
+        candidates.append(
+            {
+                "name": name,
+                "version": str(metadata.get("version") or "unknown"),
+                "description": short(str(metadata.get("description") or ""), 180),
+                "remote_path": rel_dir,
+                "folder": folder.name,
+                "target_name": safe_install_name(name or folder.name),
+            }
+        )
+    return candidates
+
+
+def preview_skill_install(url: str, target_root: str) -> Dict[str, Any]:
+    if not str(target_root or "").strip():
+        raise ValueError("Install directory is required")
+    root = expand_root(target_root)
+    with tempfile.TemporaryDirectory(prefix="asm-install-preview-") as tmp:
+        repo_root, source = install_source_from_url(url, Path(tmp))
+        candidates = skill_install_candidates(repo_root, source.get("source_path", ""))
+    if not candidates:
+        raise ValueError("No SKILL.md was found in this link")
+    return {"target_root": str(root), "source": source, "candidates": candidates}
+
+
+def install_skill_from_url(url: str, target_root: str, remote_path: str, overwrite: bool = False) -> Dict[str, Any]:
+    if not str(target_root or "").strip():
+        raise ValueError("Install directory is required")
+    target_root_path = expand_root(target_root)
+    target_root_path.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="asm-install-") as tmp:
+        repo_root, source = install_source_from_url(url, Path(tmp))
+        candidates = skill_install_candidates(repo_root, source.get("source_path", ""))
+        if remote_path:
+            candidates = [candidate for candidate in candidates if candidate["remote_path"] == remote_path]
+        if not candidates:
+            raise ValueError("No matching skill was found in this link")
+        candidate = candidates[0]
+        source_dir = repo_root / candidate["remote_path"]
+        if not source_dir.is_dir() or not (source_dir / "SKILL.md").is_file():
+            raise ValueError("The selected item is not a valid skill directory")
+        target_dir = target_root_path / candidate["target_name"]
+        backup = ""
+        if target_dir.exists():
+            if not overwrite:
+                raise ValueError(f"Target already exists: {target_dir}")
+            stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+            backup_dir = unique_backup_path(f"install-overwrite--{target_dir.name}--{stamp}", str(target_dir))
+            shutil.copytree(target_dir, backup_dir)
+            backup = str(backup_dir)
+            shutil.rmtree(target_dir)
+        shutil.copytree(source_dir, target_dir)
+    registry = Registry()
+    caps = discover_capabilities(load_config())
+    for cap in caps:
+        registry.upsert_capability(cap)
+    registry.prune_to_scan(caps)
+    registry.log_operation("install", str(target_dir), {"url": url, "source": source, "skill": candidate, "backup": backup}, commit=False)
+    registry.conn.commit()
+    usage_import = import_usage_from_logs(registry)
+    return {"installed": str(target_dir), "skill": candidate, "source": source, "backup": backup, "count": len(caps), "usage_import": usage_import}
 
 
 def copy_tree_contents(source: Path, target: Path) -> None:
@@ -1902,6 +2087,11 @@ def local_update_fallback(
 
 def strip_ansi(text: str) -> str:
     return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+
+def is_rate_limit_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return "rate limit" in text or "http error 403" in text
 
 
 def discover_remote_with_find_skills(skill_name: str) -> Optional[Dict[str, str]]:
@@ -2923,6 +3113,19 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
                 result = pick_directory()
                 json_response(self, {"ok": True, **result})
                 return
+            if self.path == "/api/install-preview":
+                result = preview_skill_install(payload.get("url", ""), payload.get("target_root", ""))
+                json_response(self, {"ok": True, **result})
+                return
+            if self.path == "/api/install-apply":
+                result = install_skill_from_url(
+                    payload.get("url", ""),
+                    payload.get("target_root", ""),
+                    payload.get("remote_path", ""),
+                    bool(payload.get("overwrite")),
+                )
+                json_response(self, {"ok": True, **result})
+                return
             if self.path == "/api/recommendations":
                 json_response(self, {"ok": True, **management_recommendations()})
                 return
@@ -3082,7 +3285,7 @@ ADMIN_HTML = r"""<!doctype html>
       position: absolute;
       right: 0;
       top: 42px;
-      width: 150px;
+      min-width: 190px;
       padding: 6px;
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -3093,6 +3296,7 @@ ADMIN_HTML = r"""<!doctype html>
     .more-list button {
       width: 100%;
       justify-content: flex-start;
+      white-space: nowrap;
       box-shadow: none;
       margin: 2px 0;
     }
@@ -3127,6 +3331,37 @@ ADMIN_HTML = r"""<!doctype html>
       margin-bottom: 12px;
     }
     input, select { width: 100%; padding: 0 10px; border-radius: 6px; }
+    input[type="checkbox"] { width: auto; padding: 0; }
+    .install-form { display: grid; gap: 14px; }
+    .install-field { display: grid; gap: 7px; }
+    .install-field label {
+      color: var(--muted);
+      text-transform: uppercase;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .install-target-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+    }
+    .install-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      line-height: 1.4;
+      color: var(--text);
+      text-transform: none;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .install-actions {
+      display: flex;
+      justify-content: center;
+      padding-top: 4px;
+    }
+    .install-actions .primary { min-width: 160px; justify-content: center; }
     .table-shell {
       overflow: auto;
       border: 1px solid var(--line);
@@ -3479,6 +3714,7 @@ ADMIN_HTML = r"""<!doctype html>
         <details class="more-menu">
           <summary data-i18n="moreActions">More</summary>
           <div class="more-list">
+            <button onclick="showInstallSkill()" data-i18n="installSkill">Install Skill</button>
             <button onclick="showSources()" data-i18n="sourceManagement">Sources</button>
             <button onclick="health()" data-i18n="healthCheck">Health</button>
             <button onclick="report()" data-i18n="snapshotExport">Export Snapshot</button>
@@ -3585,6 +3821,16 @@ ADMIN_HTML = r"""<!doctype html>
         sourceManagement: 'Source Management',
         recommendations: 'Smart Upgrade',
         operationLog: 'Operation Log',
+        installSkill: 'Install Skill',
+        installUrl: 'Skill link',
+        installUrlPlaceholder: 'Paste a GitHub/GitLab repository, folder, or .zip link',
+        installTarget: 'Install to',
+        identifySkill: 'Install Skills',
+        installNow: 'Install',
+        overwriteExisting: 'Back up and replace if the folder already exists',
+        installFound: count => `${count} skill candidate${count === 1 ? '' : 's'} found`,
+        installDone: path => `Installed: ${path}`,
+        installNoTarget: 'Choose an install folder first.',
         addSource: 'Add Source',
         deleteSource: 'Delete Source',
         deleteSourceConfirm: (platform, root) => `Delete this source from ${platform}?\\n\\n${root}\\n\\nLocal files will not be deleted.`,
@@ -3608,6 +3854,7 @@ ADMIN_HTML = r"""<!doctype html>
         smartStepDuplicates: 'Checking duplicates',
         smartStepDone: 'Check complete',
         smartNoIssues: 'No issues that need action were found.',
+        smartRateLimitWarning: count => `GitHub API request limit was reached. Remote update checks were incomplete for ${count} skill${count === 1 ? '' : 's'}. Try again later or set GITHUB_TOKEN before starting this service.`,
         adviceAction: 'Suggested action',
         adviceImpact: 'Scope',
         adviceRisk: 'Risk',
@@ -3762,6 +4009,16 @@ ADMIN_HTML = r"""<!doctype html>
         sourceManagement: '来源管理',
         recommendations: '智能升级',
         operationLog: '操作日志',
+        installSkill: '安装 Skill',
+        installUrl: 'Skill 链接',
+        installUrlPlaceholder: '粘贴 GitHub/GitLab 仓库、目录或 .zip 链接',
+        installTarget: '安装到',
+        identifySkill: '安装 Skills',
+        installNow: '安装',
+        overwriteExisting: '如果目录已存在，先备份再替换',
+        installFound: count => `识别到 ${count} 个 skill`,
+        installDone: path => `已安装：${path}`,
+        installNoTarget: '请先选择安装目录。',
         addSource: '添加来源',
         deleteSource: '删除来源',
         deleteSourceConfirm: (platform, root) => `确认从 ${platform} 删除这个来源吗？\\n\\n${root}\\n\\n这个操作只会移除来源配置，不会删除本地文件。`,
@@ -3785,6 +4042,7 @@ ADMIN_HTML = r"""<!doctype html>
         smartStepDuplicates: '检测是否有重复',
         smartStepDone: '检测完成',
         smartNoIssues: '没有发现需要处理的问题。',
+        smartRateLimitWarning: count => `GitHub 接口请求受限，本次有 ${count} 个 skill 的远程更新检查未完成。稍后再试，或启动服务前设置 GITHUB_TOKEN。`,
         adviceAction: '建议动作',
         adviceImpact: '影响范围',
         adviceRisk: '风险',
@@ -4480,6 +4738,102 @@ ADMIN_HTML = r"""<!doctype html>
         </tr>`;
       }).join('');
     }
+    async function showInstallSkill() {
+      closeMoreMenus();
+      try {
+        const data = await api('/api/sources');
+        const sources = (data.sources || []).filter(source => source.enabled && source.exists);
+        const preferred = sources.find(source => source.platform === 'shared') || sources[0] || null;
+        $('detailTitle').textContent = t('installSkill');
+        $('detailBody').innerHTML = `
+          <div class="install-form">
+            <div class="install-field">
+              <label for="installUrl">${esc(t('installUrl'))}</label>
+              <input id="installUrl" placeholder="${esc(t('installUrlPlaceholder'))}" style="width:100%">
+            </div>
+            <div class="install-field">
+              <label for="installTarget">${esc(t('installTarget'))}</label>
+              <div class="install-target-row">
+                <select id="installTarget">${installTargetOptions(sources, preferred)}</select>
+                <button onclick="chooseInstallDirectory()">${esc(t('chooseDirectory'))}</button>
+              </div>
+              <input id="installCustomTarget" readonly value="">
+            </div>
+            <div class="install-field">
+              <label class="install-option"><input id="installOverwrite" type="checkbox"> <span>${esc(t('overwriteExisting'))}</span></label>
+            </div>
+            <div class="install-actions">
+              <button class="primary" onclick="previewInstallSkill()">${esc(t('identifySkill'))}</button>
+            </div>
+            <div id="installResults"></div>
+          </div>`;
+        $('detailModal').classList.add('open');
+      } catch(e) {
+        toast(e.message);
+      }
+    }
+    function installTargetOptions(sources, preferred) {
+      const rows = sources.map(source => {
+        const selected = preferred && source.expanded === preferred.expanded ? ' selected' : '';
+        return `<option value="${esc(source.expanded)}"${selected}>${esc(label(source.platform))} · ${esc(source.expanded)}</option>`;
+      });
+      rows.push(`<option value="__custom__">${esc(t('chooseDirectory'))}</option>`);
+      return rows.join('');
+    }
+    function selectedInstallTarget() {
+      const select = $('installTarget');
+      if (!select) return '';
+      if (select.value === '__custom__') return ($('installCustomTarget').value || '').trim();
+      return select.value;
+    }
+    async function chooseInstallDirectory() {
+      try {
+        const result = await api('/api/pick-directory');
+        $('installCustomTarget').value = result.path || '';
+        $('installTarget').value = '__custom__';
+      } catch(e) {
+        toast(e.message);
+      }
+    }
+    async function previewInstallSkill() {
+      const url = ($('installUrl').value || '').trim();
+      const target = selectedInstallTarget();
+      if (!target) return toast(t('installNoTarget'));
+      if (!url) return toast(t('installUrl'));
+      $('installResults').innerHTML = `<div class="empty">${esc(t('checkingUpdate'))}<span class="loading-dots">...</span></div>`;
+      try {
+        const data = await api('/api/install-preview', {url, target_root: target});
+        const candidates = data.candidates || [];
+        $('installResults').innerHTML = `
+          <div class="event-meta" style="margin-bottom:8px">${esc(t('installFound')(candidates.length))}</div>
+          <div class="choice-list">${candidates.map(candidate => installCandidateCard(url, target, candidate)).join('')}</div>`;
+      } catch(e) {
+        $('installResults').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+      }
+    }
+    function installCandidateCard(url, target, candidate) {
+      return `
+        <div class="choice">
+          <div>
+            <strong>${esc(candidate.name)}</strong>
+            <small>${esc(t('version'))}: ${esc(candidate.version || 'unknown')} · ${esc(candidate.remote_path || '')}</small>
+            ${candidate.description ? `<small>${esc(localizedDescription(candidate.description, candidate.name))}</small>` : ''}
+          </div>
+          <button class="tiny primary" onclick='installCandidate(${JSON.stringify(url)},${JSON.stringify(target)},${JSON.stringify(candidate.remote_path)})'>${esc(t('installNow'))}</button>
+        </div>`;
+    }
+    async function installCandidate(url, target, remotePath) {
+      try {
+        const overwrite = Boolean($('installOverwrite') && $('installOverwrite').checked);
+        $('installResults').innerHTML = `<div class="empty">${esc(t('installNow'))}<span class="loading-dots">...</span></div>`;
+        const result = await api('/api/install-apply', {url, target_root: target, remote_path: remotePath, overwrite});
+        toast(t('installDone')(result.installed || ''));
+        $('installResults').innerHTML = `<div class="empty">${esc(t('installDone')(result.installed || ''))}</div>`;
+        await load();
+      } catch(e) {
+        $('installResults').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+      }
+    }
     async function showSources() {
       closeMoreMenus();
       try {
@@ -4635,6 +4989,10 @@ ADMIN_HTML = r"""<!doctype html>
         stopLoadingDots();
         const items = recommendationItems;
         const counts = data.counts || {};
+        const rateLimited = (data.update_results || []).filter(item => item.status === 'rate_limited').length;
+        const rateLimitNotice = rateLimited
+          ? `<div class="empty" style="margin-bottom:12px">${esc(t('smartRateLimitWarning')(rateLimited))}</div>`
+          : '';
         const metricItems = [
           ['update', counts.update || 0],
           ['health', counts.health || 0],
@@ -4645,6 +5003,7 @@ ADMIN_HTML = r"""<!doctype html>
           <div class="metrics" style="grid-template-columns: repeat(4, minmax(90px, 1fr)); margin-bottom:12px">
             ${metricItems.map(([key, value]) => `<div class="metric"><strong>${esc(value)}</strong><span>${esc(issueLabel(key))}</span></div>`).join('')}
           </div>
+          ${rateLimitNotice}
           <div class="choice-list">${items.map(item => recommendationCard(item)).join('') || `<div class="empty">${esc(t('smartNoIssues'))}</div>`}</div>`;
       } catch(e) {
         stopLoadingDots();

@@ -18,6 +18,7 @@ This tool scans local skill directories, groups the same skill across platforms,
 - See 30-day usage counts imported from local session logs when those logs are available.
 - Check health scores based on status, metadata, and file structure.
 - Add your own skill source folders.
+- Install new skills from GitHub, GitLab, or zip links.
 - Export a simple management report.
 - Review update candidates and unify local copies when versions differ.
 - Disable or delete skills with confirmation and backup.
@@ -116,6 +117,7 @@ The local HTML dashboard is the easiest way to use the tool. It includes:
 - name-only search;
 - details and usage records;
 - custom source management;
+- skill installation from GitHub, GitLab, or zip links;
 - smart upgrade checks with a 24-hour cache;
 - local version unification;
 - soft enable/disable status;

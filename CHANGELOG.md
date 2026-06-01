@@ -2,6 +2,12 @@
 
 All notable changes to Agent Skill Manager are documented here.
 
+## Unreleased
+
+- Added a dashboard install flow for installing skills from GitHub, GitLab, or direct zip links.
+- Added install preview so repositories with multiple `SKILL.md` files can be reviewed before installation.
+- Added backup-and-replace support when installing over an existing local skill folder.
+
 ## 1.0.0 - 2026-05-31
 
 Initial public release.
