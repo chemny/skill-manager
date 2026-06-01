@@ -48,7 +48,7 @@ REMOTE_UPDATE_CACHE_TTL = dt.timedelta(hours=24)
 SMART_UPGRADE_JOBS: Dict[str, Dict[str, Any]] = {}
 SMART_UPGRADE_LOCK = threading.Lock()
 SMART_UPGRADE_SNAPSHOT_KEY = "latest"
-SMART_UPGRADE_SCHEMA_VERSION = 2
+SMART_UPGRADE_SCHEMA_VERSION = 3
 UPDATE_BUTTON_DISABLED_STATUSES = {"updated", "latest", "no_cloud", "remote_error", "unsupported"}
 
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -1227,6 +1227,7 @@ def smart_upgrade_check(progress: Optional[Any] = None, use_cache: bool = True) 
                 "status": result.get("status"),
                 "cache_hit": bool(result.get("cache_hit")),
                 "checked_at": result.get("checked_at", ""),
+                "remote_errors": result.get("remote_errors", []),
             }
             if result.get("status") == "remote_update":
                 remote_version = str(result.get("remote_version") or "unknown")
@@ -1695,7 +1696,7 @@ def parse_github_url(url: str) -> Optional[Dict[str, str]]:
     if not match:
         return None
     repo = re.sub(r"\.git$", "", match.group(2))
-    info = {"owner": match.group(1), "repo": repo, "ref": "", "path": ""}
+    info = {"provider": "github", "owner": match.group(1), "repo": repo, "ref": "", "path": ""}
     tree = re.search(r"github\.com/[^/]+/[^/]+/(?:tree|blob)/([^/]+)(?:/(.*))?", url)
     if tree:
         info["ref"] = tree.group(1)
@@ -1716,12 +1717,27 @@ def parse_gitlab_url(url: str) -> Optional[Dict[str, str]]:
     repo_part = re.sub(r"\.git$", "", repo_part)
     if "/" not in repo_part:
         return None
-    info = {"project": repo_part, "ref": "", "path": ""}
+    info = {"provider": "gitlab", "project": repo_part, "ref": "", "path": ""}
     if marker and tail:
         pieces = tail.split("/")
         if pieces and pieces[0] in ("tree", "blob") and len(pieces) >= 2:
             info["ref"] = pieces[1]
             info["path"] = "/".join(pieces[2:])
+    return info
+
+
+def parse_skills_sh_url(url: str) -> Optional[Dict[str, str]]:
+    if not url:
+        return None
+    parsed = urllib.parse.urlparse(url)
+    if parsed.netloc.lower() not in ("skills.sh", "www.skills.sh"):
+        return None
+    parts = [part for part in parsed.path.strip("/").split("/") if part]
+    if len(parts) < 2:
+        return None
+    info = {"provider": "github", "owner": parts[0], "repo": parts[1], "ref": "", "path": ""}
+    if len(parts) > 2:
+        info["skill"] = parts[2]
     return info
 
 
@@ -1785,7 +1801,7 @@ def metadata_for_row(row: sqlite3.Row) -> Dict[str, Any]:
         return {}
 
 
-def github_info_for_cap(row: sqlite3.Row) -> Optional[Dict[str, str]]:
+def remote_info_for_cap(row: sqlite3.Row) -> Optional[Dict[str, str]]:
     metadata = metadata_for_row(row)
     repository = metadata.get("repository", "")
     if isinstance(repository, dict):
@@ -1797,10 +1813,16 @@ def github_info_for_cap(row: sqlite3.Row) -> Optional[Dict[str, str]]:
         repository,
     ]
     for url in urls:
-        info = parse_github_url(str(url or ""))
+        text = str(url or "")
+        info = parse_github_url(text) or parse_gitlab_url(text) or parse_skills_sh_url(text)
         if info:
             return info
     return None
+
+
+def github_info_for_cap(row: sqlite3.Row) -> Optional[Dict[str, str]]:
+    info = remote_info_for_cap(row)
+    return info if info and info.get("provider") == "github" else None
 
 
 def version_key(version: str) -> Tuple[int, ...]:
@@ -1871,22 +1893,35 @@ def download_gitlab_archive(info: Dict[str, str], branch: str, tmpdir: Path) -> 
     return download_zip_archive(url, tmpdir)
 
 
+def download_remote_archive(info: Dict[str, str], branch: str, tmpdir: Path) -> Path:
+    if info.get("provider") == "gitlab":
+        return download_gitlab_archive(info, branch, tmpdir)
+    return download_github_archive(info, branch, tmpdir)
+
+
 def latest_commit_for_repo_path(info: Dict[str, str], branch: str, rel_path: str) -> str:
+    if info.get("provider") == "gitlab":
+        project = urllib.parse.quote(info["project"], safe="")
+        query = f"ref_name={urllib.parse.quote(branch)}&path={urllib.parse.quote(rel_path, safe='')}&per_page=1"
+        commits = gitlab_json(f"https://gitlab.com/api/v4/projects/{project}/repository/commits?{query}")
+        return commits[0]["id"] if commits else ""
     repo_api = f"https://api.github.com/repos/{info['owner']}/{info['repo']}"
     encoded = urllib.parse.quote(rel_path, safe="")
     commits = github_json(f"{repo_api}/commits?sha={urllib.parse.quote(branch)}&path={encoded}&per_page=1")
     return commits[0]["sha"] if commits else ""
 
 
-def find_remote_skill_dir(repo_root: Path, skill_name: str, local_folder: str) -> Optional[Path]:
+def find_remote_skill_dir(repo_root: Path, skill_name: str, local_folder: str, remote_skill: str = "") -> Optional[Path]:
+    names = {str(skill_name or "").lower(), str(remote_skill or "").lower()}
+    names.discard("")
     candidates: List[Tuple[int, Path]] = []
     for skill_file in repo_root.rglob("SKILL.md"):
         folder = skill_file.parent
         metadata = parse_frontmatter(skill_file)
         score = 0
-        if str(metadata.get("name", "")).lower() == skill_name.lower():
+        if str(metadata.get("name", "")).lower() in names:
             score += 100
-        if folder.name.lower() == local_folder.lower():
+        if folder.name.lower() == local_folder.lower() or folder.name.lower() in names:
             score += 80
         if folder.parent.name.lower() in ("skills", "skill"):
             score += 10
@@ -1910,7 +1945,7 @@ def install_source_from_url(url: str, tmpdir: Path) -> Tuple[Path, Dict[str, str
     clean = str(url or "").strip()
     if not clean:
         raise ValueError("URL is required")
-    info = parse_github_url(clean)
+    info = parse_github_url(clean) or parse_skills_sh_url(clean)
     if info:
         repo_api = f"https://api.github.com/repos/{info['owner']}/{info['repo']}"
         branch = info["ref"] or github_json(repo_api)["default_branch"]
@@ -2117,10 +2152,18 @@ def discover_remote_with_find_skills(skill_name: str) -> Optional[Dict[str, str]
         if owner.lower() in ("anthropics", "openai", "vercel-labs", "nousresearch"):
             score += 10
         if score > 0:
-            candidates.append((score, {"owner": owner, "repo": repo, "ref": "", "path": "", "skill": remote_skill}))
+            candidates.append((score, {"provider": "github", "owner": owner, "repo": repo, "ref": "", "path": "", "skill": remote_skill}))
     if not candidates:
         return None
     return sorted(candidates, key=lambda item: item[0], reverse=True)[0][1]
+
+
+def remote_error_summary(provider: str, exc: BaseException) -> Dict[str, str]:
+    status = "rate_limited" if is_rate_limit_error(exc) else "error"
+    if isinstance(exc, urllib.error.HTTPError) and exc.code == 404:
+        status = "not_found"
+    label = {"github": "GitHub", "gitlab": "GitLab", "find-skills": "find-skills"}.get(provider, provider or "remote")
+    return {"source": label, "status": status, "message": str(exc)}
 
 
 def remote_cache_payload(
@@ -2218,9 +2261,8 @@ def get_remote_snapshot(registry: Registry, skill_name: str, fresh_only: bool = 
 
 
 def remote_info_from_snapshot(snapshot: Dict[str, Any]) -> Optional[Dict[str, str]]:
-    if snapshot.get("source_type") != "github":
-        return None
-    info = parse_github_url(str(snapshot.get("source_url") or ""))
+    source_url = str(snapshot.get("source_url") or "")
+    info = parse_github_url(source_url) or parse_gitlab_url(source_url) or parse_skills_sh_url(source_url)
     if not info:
         return None
     info["ref"] = str(snapshot.get("source_ref") or info.get("ref") or "")
@@ -2264,13 +2306,23 @@ def fetch_remote_snapshot_for_info(
     discovered_by: str,
     registry: Registry,
 ) -> Dict[str, Any]:
-    repo_api = f"https://api.github.com/repos/{info['owner']}/{info['repo']}"
-    branch = row["github_ref"] or info.get("ref") or github_json(repo_api)["default_branch"]
+    provider = info.get("provider") or "github"
+    if provider == "gitlab":
+        project = urllib.parse.quote(info["project"], safe="")
+        project_api = f"https://gitlab.com/api/v4/projects/{project}"
+        branch = row["github_ref"] or info.get("ref") or gitlab_json(project_api)["default_branch"]
+        source_url = f"https://gitlab.com/{info['project']}"
+        source_label = info["project"]
+    else:
+        repo_api = f"https://api.github.com/repos/{info['owner']}/{info['repo']}"
+        branch = row["github_ref"] or info.get("ref") or github_json(repo_api)["default_branch"]
+        source_url = f"https://github.com/{info['owner']}/{info['repo']}"
+        source_label = f"{info['owner']}/{info['repo']}"
     with tempfile.TemporaryDirectory(prefix="asm-update-") as tmp:
-        repo_root = download_github_archive(info, branch, Path(tmp))
-        remote_dir = find_remote_skill_dir(repo_root, row["name"], Path(row["path"]).name)
+        repo_root = download_remote_archive(info, branch, Path(tmp))
+        remote_dir = find_remote_skill_dir(repo_root, row["name"], Path(row["path"]).name, info.get("skill", ""))
         if not remote_dir:
-            raise ValueError(f"No cloud version was found. Repository exists, but no matching SKILL.md directory was found in {info['owner']}/{info['repo']}.")
+            raise ValueError(f"No cloud version was found. Repository exists, but no matching SKILL.md directory was found in {source_label}.")
         metadata = parse_frontmatter(remote_dir / "SKILL.md")
         remote_version = str(metadata.get("version") or "unknown")
         rel_path = remote_dir.relative_to(repo_root).as_posix()
@@ -2279,8 +2331,8 @@ def fetch_remote_snapshot_for_info(
             registry,
             {
                 "skill_name": row["name"],
-                "source_type": "github",
-                "source_url": f"https://github.com/{info['owner']}/{info['repo']}",
+                "source_type": provider,
+                "source_url": source_url,
                 "source_ref": branch,
                 "source_path": rel_path,
                 "remote_version": remote_version,
@@ -2452,11 +2504,12 @@ def check_group_update(ids: Sequence[str], force_remote: bool = False, remember_
             if remember_terminal:
                 remember_update_result(registry, primary["id"], result, primary["github_hash"] or "")
             return result
-    base = next((row for row in rows if github_info_for_cap(row)), None)
-    try:
-        if base:
-            info = github_info_for_cap(base)
-            assert info is not None
+    base = next((row for row in rows if remote_info_for_cap(row)), None)
+    remote_errors: List[Dict[str, str]] = []
+    if base:
+        info = remote_info_for_cap(base)
+        assert info is not None
+        try:
             snapshot = fetch_remote_snapshot_for_info(base, info, "metadata", registry)
             registry.record_update_check(
                 base["id"],
@@ -2479,65 +2532,74 @@ def check_group_update(ids: Sequence[str], force_remote: bool = False, remember_
             if remember_terminal:
                 remember_update_result(registry, base["id"], result, base["github_hash"] or "")
             return result
+        except (urllib.error.HTTPError, urllib.error.URLError, ValueError) as exc:
+            remote_errors.append(remote_error_summary(info.get("provider", "remote"), exc))
+
+    try:
         info = discover_remote_with_find_skills(primary["name"])
         if info:
-            snapshot = fetch_remote_snapshot_for_info(primary, info, "find-skills", registry)
-            registry.record_update_check(
-                primary["id"],
-                "remote_checked",
-                primary["github_hash"] or "",
-                snapshot.get("remote_hash", ""),
-                remote_cache_payload(
+            try:
+                snapshot = fetch_remote_snapshot_for_info(primary, info, "find-skills", registry)
+            except (urllib.error.HTTPError, urllib.error.URLError, ValueError) as exc:
+                remote_errors.append(remote_error_summary("find-skills", exc))
+                snapshot = None
+            if snapshot:
+                registry.record_update_check(
+                    primary["id"],
                     "remote_checked",
-                    "Remote version snapshot refreshed from find-skills.",
-                    repo=snapshot.get("source_url", ""),
-                    branch=snapshot.get("source_ref", ""),
-                    remote_version=snapshot.get("remote_version", "unknown"),
-                    remote_hash=snapshot.get("remote_hash", ""),
-                    remote_path=snapshot.get("source_path", ""),
-                ),
-            )
-            result = snapshot_result(rows, local_versions, max_local, snapshot, skipped)
-            result["cache_hit"] = False
-            result["message"] = "Remote version checked."
-            if remember_terminal:
-                remember_update_result(registry, primary["id"], result, primary["github_hash"] or "")
-            return result
-        message = "No newer version was found. No bound cloud source or find-skills candidate was found."
+                    primary["github_hash"] or "",
+                    snapshot.get("remote_hash", ""),
+                    remote_cache_payload(
+                        "remote_checked",
+                        "Remote version snapshot refreshed from find-skills.",
+                        repo=snapshot.get("source_url", ""),
+                        branch=snapshot.get("source_ref", ""),
+                        remote_version=snapshot.get("remote_version", "unknown"),
+                        remote_hash=snapshot.get("remote_hash", ""),
+                        remote_path=snapshot.get("source_path", ""),
+                    ),
+                )
+                result = snapshot_result(rows, local_versions, max_local, snapshot, skipped)
+                result["cache_hit"] = False
+                result["message"] = "Remote version checked."
+                if remote_errors:
+                    result["remote_errors"] = remote_errors
+                if remember_terminal:
+                    remember_update_result(registry, primary["id"], result, primary["github_hash"] or "")
+                return result
+        message = "No newer version was found."
+        cache_status = "no_cloud"
+        if remote_errors and any(error.get("status") == "rate_limited" for error in remote_errors):
+            cache_status = "remote_error"
+            message = "No newer version was found. Some remote sources were temporarily unavailable."
+        elif not info:
+            message = "No newer version was found. No bound cloud source or find-skills candidate was found."
         registry.record_update_check(
             primary["id"],
-            "no_cloud",
+            cache_status,
             primary["github_hash"] or "",
             "",
-            remote_cache_payload("no_cloud", message),
+            remote_cache_payload(cache_status, message),
         )
         result = local_update_fallback(
             rows,
             local_versions,
             max_local,
             message,
-            {"status": "latest" if len(local_versions) <= 1 else "local_mismatch", "cache_hit": False, "checked_at": now_iso(), "skipped_targets": skipped},
+            {
+                "status": "latest" if len(local_versions) <= 1 else "local_mismatch",
+                "cache_hit": False,
+                "checked_at": now_iso(),
+                "skipped_targets": skipped,
+                "remote_errors": remote_errors,
+            },
         )
         if remember_terminal:
             remember_update_result(registry, primary["id"], result, primary["github_hash"] or "")
         return result
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            message = "No cloud version was found. The repository returned 404 Not Found."
-            registry.record_update_check(
-                (base or primary)["id"],
-                "no_cloud",
-                (base or primary)["github_hash"] or "",
-                "",
-                remote_cache_payload("no_cloud", message),
-            )
-            result = local_update_fallback(rows, local_versions, max_local, message, {"cache_hit": False, "checked_at": now_iso(), "skipped_targets": skipped})
-            if remember_terminal:
-                remember_update_result(registry, (base or primary)["id"], result, (base or primary)["github_hash"] or "")
-            return result
-        raise
     except (urllib.error.URLError, ValueError) as exc:
-        message = str(exc) if str(exc).startswith("No cloud version was found.") else f"No cloud version was found. {exc}"
+        remote_errors.append(remote_error_summary("find-skills", exc))
+        message = "No newer version was found. Some remote sources were temporarily unavailable."
         registry.record_update_check(
             (base or primary)["id"],
             "remote_error",
@@ -2545,7 +2607,13 @@ def check_group_update(ids: Sequence[str], force_remote: bool = False, remember_
             "",
             remote_cache_payload("remote_error", message),
         )
-        result = local_update_fallback(rows, local_versions, max_local, message, {"cache_hit": False, "checked_at": now_iso(), "skipped_targets": skipped})
+        result = local_update_fallback(
+            rows,
+            local_versions,
+            max_local,
+            message,
+            {"cache_hit": False, "checked_at": now_iso(), "skipped_targets": skipped, "remote_errors": remote_errors},
+        )
         if remember_terminal:
             remember_update_result(registry, (base or primary)["id"], result, (base or primary)["github_hash"] or "")
         return result
@@ -2580,19 +2648,23 @@ def apply_group_update(ids: Sequence[str], mode: str) -> Dict[str, Any]:
             copy_tree_contents(source_path, Path(row["path"]))
             updated += 1
     elif mode == "remote":
-        base = next((row for row in rows if github_info_for_cap(row)), None) or rows[0]
+        base = next((row for row in rows if remote_info_for_cap(row)), None) or rows[0]
         snapshot = get_remote_snapshot(registry, base["name"], fresh_only=False)
         info = remote_info_from_snapshot(snapshot) if snapshot else None
         if not info:
-            info = github_info_for_cap(base)
+            info = remote_info_for_cap(base)
         if not info:
-            raise ValueError("No GitHub or supported Vercel repository metadata was found.")
-        repo_api = f"https://api.github.com/repos/{info['owner']}/{info['repo']}"
-        branch = (snapshot or {}).get("source_ref") or base["github_ref"] or info["ref"] or github_json(repo_api)["default_branch"]
+            raise ValueError("No supported repository metadata was found.")
+        if info.get("provider") == "gitlab":
+            project = urllib.parse.quote(info["project"], safe="")
+            branch = (snapshot or {}).get("source_ref") or base["github_ref"] or info["ref"] or gitlab_json(f"https://gitlab.com/api/v4/projects/{project}")["default_branch"]
+        else:
+            repo_api = f"https://api.github.com/repos/{info['owner']}/{info['repo']}"
+            branch = (snapshot or {}).get("source_ref") or base["github_ref"] or info["ref"] or github_json(repo_api)["default_branch"]
         with tempfile.TemporaryDirectory(prefix="asm-update-") as tmp:
-            repo_root = download_github_archive(info, branch, Path(tmp))
+            repo_root = download_remote_archive(info, branch, Path(tmp))
             snapshot_path = (snapshot or {}).get("source_path") or ""
-            remote_dir = repo_root / snapshot_path if snapshot_path else find_remote_skill_dir(repo_root, base["name"], Path(base["path"]).name)
+            remote_dir = repo_root / snapshot_path if snapshot_path else find_remote_skill_dir(repo_root, base["name"], Path(base["path"]).name, info.get("skill", ""))
             if not remote_dir:
                 raise ValueError("Repository found, but no matching remote skill directory was found.")
             for row in rows:
@@ -4989,7 +5061,10 @@ ADMIN_HTML = r"""<!doctype html>
         stopLoadingDots();
         const items = recommendationItems;
         const counts = data.counts || {};
-        const rateLimited = (data.update_results || []).filter(item => item.status === 'rate_limited').length;
+        const rateLimited = (data.update_results || []).filter(item => {
+          if (item.status === 'rate_limited') return true;
+          return (item.remote_errors || []).some(error => error.status === 'rate_limited');
+        }).length;
         const rateLimitNotice = rateLimited
           ? `<div class="empty" style="margin-bottom:12px">${esc(t('smartRateLimitWarning')(rateLimited))}</div>`
           : '';
