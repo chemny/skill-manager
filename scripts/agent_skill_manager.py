@@ -4839,18 +4839,20 @@ ADMIN_HTML = r"""<!doctype html>
       right: 22px;
       bottom: 22px;
       z-index: 60;
-      min-width: 132px;
+      width: 168px;
+      height: 56px;
       border: 1px solid rgba(15,118,110,.35);
       border-radius: 999px;
       background: var(--accent);
       color: white;
       box-shadow: 0 14px 34px rgba(23,32,27,.24);
-      padding: 10px 14px;
+      padding: 0 14px;
       display: none;
       align-items: center;
       gap: 10px;
       cursor: pointer;
       font-weight: 800;
+      overflow: hidden;
     }
     .smart-job-float.show { display: flex; }
     .smart-job-float.done {
@@ -4876,6 +4878,10 @@ ADMIN_HTML = r"""<!doctype html>
       display: block;
       font-size: 13px;
       line-height: 1.1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 112px;
     }
     .smart-job-sub {
       display: block;
@@ -4883,6 +4889,10 @@ ADMIN_HTML = r"""<!doctype html>
       opacity: .78;
       margin-top: 2px;
       font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 112px;
     }
     @keyframes pulseDot {
       0%, 100% { transform: scale(.8); opacity: .55; }
@@ -5111,7 +5121,6 @@ ADMIN_HTML = r"""<!doctype html>
         smartFloatDone: 'Scan complete',
         smartFloatError: 'Scan failed',
         smartFloatCanceled: 'Scan stopped',
-        smartFloatUpdating: 'Updating',
         smartDetecting: 'Checking all skills',
         smartStepScan: 'Scanning local skills',
         smartStepUsage: 'Refreshing usage records',
@@ -5338,7 +5347,6 @@ ADMIN_HTML = r"""<!doctype html>
         smartFloatDone: '扫描完成',
         smartFloatError: '扫描异常',
         smartFloatCanceled: '已停止',
-        smartFloatUpdating: '更新中',
         smartDetecting: '正在检测所有 skills',
         smartStepScan: '扫描本地 skills',
         smartStepUsage: '刷新使用记录',
@@ -6522,7 +6530,7 @@ ADMIN_HTML = r"""<!doctype html>
       el.classList.toggle('done', status === 'done' || status === 'canceled');
       el.classList.toggle('error', status === 'error');
       const titleKey = status === 'running'
-        ? (current.stage === 'update' ? 'smartFloatUpdating' : 'smartFloatRunning')
+        ? 'smartFloatRunning'
         : status === 'done'
           ? 'smartFloatDone'
           : status === 'canceled'
