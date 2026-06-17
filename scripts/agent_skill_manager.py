@@ -5129,7 +5129,7 @@ ADMIN_HTML = r"""<!doctype html>
     <div class="dialog">
       <div class="dialog-head">
         <strong id="detailTitle">Details</strong>
-        <button class="tiny" onclick="closeDetails()" data-i18n="close">Close</button>
+        <button class="tiny" id="detailCloseButton" onclick="closeDetails()">Close</button>
       </div>
       <div class="dialog-body" id="detailBody"></div>
     </div>
@@ -5226,7 +5226,9 @@ ADMIN_HTML = r"""<!doctype html>
         deleteChannelConfirm: name => `Delete update channel ${name}? Existing stats will be kept, but the channel will no longer be used.`,
         adviceReason: 'Reason',
         adviceIntro: 'Choose a scan scope, then check updates, health issues, incomplete information, and duplicates. Changes still require confirmation.',
+        minimize: 'Minimize',
         smartRun: 'Start Check',
+        smartRestart: 'Restart check',
         smartRunning: 'Checking',
         smartHint: 'Choose a scope and check whether matching skills are working normally.',
         smartScope: 'Scan scope',
@@ -5471,7 +5473,9 @@ ADMIN_HTML = r"""<!doctype html>
         deleteChannelConfirm: name => `确认删除更新渠道 ${name} 吗？历史统计会保留，但后续不会再使用这个渠道。`,
         adviceReason: '原因',
         adviceIntro: '选择扫描范围后，检测更新、健康异常、信息不完整和重复项。真正修改前仍会二次确认。',
+        minimize: '收起',
         smartRun: '开始检测',
+        smartRestart: '重新检测',
         smartRunning: '检测中',
         smartHint: '选择扫描范围后，检测对应 skills 是否正常。',
         smartScope: '扫描范围',
@@ -5711,6 +5715,7 @@ ADMIN_HTML = r"""<!doctype html>
       $('healthHelp').setAttribute('data-tip', t('healthHelp'));
       document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
       document.querySelectorAll('[data-i18n-placeholder]').forEach(el => { el.placeholder = t(el.dataset.i18nPlaceholder); });
+      updateDetailCloseButton();
     }
     function label(value) {
       return t(value) || value;
@@ -6253,8 +6258,9 @@ ADMIN_HTML = r"""<!doctype html>
               <button class="primary" onclick="previewInstallSkill()">${esc(t('identifySkill'))}</button>
             </div>
             <div id="installResults"></div>
-          </div>`;
+        </div>`;
         $('detailModal').classList.add('open');
+        updateDetailCloseButton();
       } catch(e) {
         toast(e.message);
       }
@@ -6347,6 +6353,7 @@ ADMIN_HTML = r"""<!doctype html>
             <div class="detail-row"><div class="detail-label">${esc(t('source'))}</div><div class="detail-value">${sourceTable(data.sources || [])}</div></div>
           </div>`;
         $('detailModal').classList.add('open');
+        updateDetailCloseButton();
       } catch(e) {
         toast(e.message);
       }
@@ -6423,6 +6430,7 @@ ADMIN_HTML = r"""<!doctype html>
             <div class="detail-row"><div class="detail-label">${esc(t('updateChannel'))}</div><div class="detail-value">${updateChannelTable(data.channels || [])}</div></div>
           </div>`;
         $('detailModal').classList.add('open');
+        updateDetailCloseButton();
       } catch(e) {
         toast(e.message);
       }
@@ -6510,6 +6518,7 @@ ADMIN_HTML = r"""<!doctype html>
         renderSmartUpgradeStart(false, 'smartHint');
       }
       $('detailModal').classList.add('open');
+      updateDetailCloseButton();
       updateSmartJobFloat(job);
     }
     function renderSmartUpgradeStart(running, statusKey, detail = '') {
@@ -6532,6 +6541,7 @@ ADMIN_HTML = r"""<!doctype html>
             </div>
           </div>`;
       const progress = running && currentSmartJob ? smartProgressCard(currentSmartJob) : '';
+      const runButtonLabel = statusKey === 'smartCanceled' ? t('smartRestart') : t('smartRun');
       $('detailBody').innerHTML = `
         <div class="smart-upgrade-panel">
           ${controls}
@@ -6540,10 +6550,11 @@ ADMIN_HTML = r"""<!doctype html>
           <div class="smart-upgrade-actions">
             ${running
               ? `<button class="primary" onclick="cancelSmartUpgrade()">${esc(t('smartStop'))}</button>`
-              : `<button class="primary" onclick="runSmartUpgrade()">${esc(t('smartRun'))}</button>`}
+              : `<button class="primary" onclick="runSmartUpgrade()">${esc(runButtonLabel)}</button>`}
           </div>
         </div>`;
       updateSmartScopeControls();
+      updateDetailCloseButton();
     }
     function smartScopeCard(value, title, desc) {
       return `
@@ -6619,7 +6630,7 @@ ADMIN_HTML = r"""<!doctype html>
           </div>
           <div class="smart-progress-track"><div class="smart-progress-fill" style="width:${pct}%"></div></div>
           <div class="smart-progress-meta">
-            <div><strong>${esc(t('smartProgressScopeValue')(stats.skills))}</strong>${esc(t('smartProgressScope'))}</div>
+            <div><strong>${esc(stats.skills)}</strong>${esc(t('smartProgressScope'))}</div>
             <div><strong>${total ? esc(done) : '-'}</strong>${esc(t('smartProgressDone'))}</div>
             <div><strong>${esc(remaining)}</strong>${esc(t('smartProgressRemaining'))}</div>
           </div>
@@ -6645,6 +6656,8 @@ ADMIN_HTML = r"""<!doctype html>
     async function runSmartUpgrade() {
       try {
         const scope = selectedSmartScope();
+        currentSmartJob = {status: 'running', stage: 'scan', scope, index: 0, total: 0};
+        state.smart_job = currentSmartJob;
         renderSmartUpgradeStart(true, 'smartStepScan');
         const start = await api('/api/smart-upgrade-start', {scope});
         smartActiveJobId = start.job_id;
@@ -6653,6 +6666,8 @@ ADMIN_HTML = r"""<!doctype html>
       } catch(e) {
         stopLoadingDots();
         stopSmartPolling();
+        currentSmartJob = null;
+        state.smart_job = null;
         if (isSmartInterruptedMessage(e.message)) {
           if (isSmartPanelOpen()) renderSmartUpgradeStart(false, 'smartInterrupted', t('smartInterruptedReason'));
           return;
@@ -6675,6 +6690,14 @@ ADMIN_HTML = r"""<!doctype html>
     function isSmartPanelOpen() {
       return smartPanelVisible && $('detailModal').classList.contains('open') && $('detailTitle').textContent === t('recommendations');
     }
+    function isSmartJobRunning() {
+      return !!(state.smart_job && state.smart_job.status === 'running');
+    }
+    function updateDetailCloseButton() {
+      const btn = $('detailCloseButton');
+      if (!btn) return;
+      btn.textContent = isSmartPanelOpen() && isSmartJobRunning() ? t('minimize') : t('close');
+    }
     async function pollSmartUpgrade(jobId, renderNow = false) {
       try {
         const job = await api('/api/smart-upgrade-status', {job_id: jobId});
@@ -6687,6 +6710,8 @@ ADMIN_HTML = r"""<!doctype html>
         stopSmartPolling();
         stopLoadingDots();
         if (job.status === 'done') {
+          smartActiveJobId = '';
+          currentSmartJob = null;
           const res = await fetch('/api/state');
           const freshState = await res.json();
           state = freshState;
@@ -6698,10 +6723,15 @@ ADMIN_HTML = r"""<!doctype html>
           return;
         }
         if (job.status === 'canceled') {
+          smartActiveJobId = '';
+          currentSmartJob = null;
           if (isSmartPanelOpen()) renderSmartUpgradeStart(false, 'smartCanceled');
+          updateSmartJobFloat(job);
           return;
         }
         if (job.status === 'error') {
+          smartActiveJobId = '';
+          currentSmartJob = null;
           if (isSmartPanelOpen()) renderSmartUpgradeStart(false, 'smartInterrupted', smartErrorDetail(job.error || ''));
         }
       } catch(e) {
@@ -6726,8 +6756,12 @@ ADMIN_HTML = r"""<!doctype html>
         renderSmartUpgradeStart(true, 'smartStopping');
         const job = await api('/api/smart-upgrade-cancel', {job_id: jobId});
         state.smart_job = job;
+        smartActiveJobId = '';
+        currentSmartJob = null;
+        stopSmartPolling();
+        stopLoadingDots();
+        if (isSmartPanelOpen()) renderSmartUpgradeStart(false, 'smartCanceled');
         updateSmartJobFloat(job);
-        ensureSmartPolling(jobId);
       } catch(e) {
         toast(e.message);
       }
@@ -6741,19 +6775,17 @@ ADMIN_HTML = r"""<!doctype html>
         return;
       }
       const status = current.status;
-      if (!['running', 'done', 'error', 'canceled'].includes(status)) {
+      if (!['running', 'done', 'error'].includes(status)) {
         el.classList.remove('show', 'done', 'error');
         return;
       }
-      el.classList.toggle('done', status === 'done' || status === 'canceled');
+      el.classList.toggle('done', status === 'done');
       el.classList.toggle('error', status === 'error');
       const titleKey = status === 'running'
         ? 'smartFloatRunning'
         : status === 'done'
           ? 'smartFloatDone'
-          : status === 'canceled'
-            ? 'smartFloatCanceled'
-            : 'smartFloatError';
+          : 'smartFloatError';
       $('smartJobFloatTitle').textContent = t(titleKey);
       $('smartJobFloatSub').textContent = smartProgressDetail(current) || smartStageLabel(current.stage);
       el.classList.add('show');
@@ -6908,6 +6940,7 @@ ADMIN_HTML = r"""<!doctype html>
         $('detailTitle').textContent = t('operationLog');
         $('detailBody').innerHTML = `<div class="event-list">${(data.logs || []).map(log => `<div class="event"><div class="event-meta">${esc(log.occurred_at)} | ${esc(log.action)}</div><div>${esc(log.target || '')}</div><div class="event-meta">${esc(log.details || '')}</div></div>`).join('') || `<div class="empty">${esc(t('noUsage'))}</div>`}</div>`;
         $('detailModal').classList.add('open');
+        updateDetailCloseButton();
       } catch(e) {
         toast(e.message);
       }
@@ -6931,6 +6964,7 @@ ADMIN_HTML = r"""<!doctype html>
             <div class="detail-row"><div class="detail-label">${esc(t('healthIssues'))}</div><div class="detail-value">${issues.length ? healthIssueTable(issues.slice(0, 80)) : esc(t('healthNoIssues'))}</div></div>
           </div>`;
         $('detailModal').classList.add('open');
+        updateDetailCloseButton();
         toast(t('healthDone'));
         await load();
       } catch(e) {
@@ -6954,6 +6988,7 @@ ADMIN_HTML = r"""<!doctype html>
           <iframe src="${esc(data.html_url)}" style="width:100%;height:460px;border:1px solid var(--line);border-radius:8px;margin-top:12px;background:white"></iframe>
           <div class="empty" style="margin-top:12px">${esc(t('snapshotIntro'))}</div>`;
         $('detailModal').classList.add('open');
+        updateDetailCloseButton();
         toast(t('snapshotDone'));
       } catch(e) {
         toast(e.message);
@@ -7052,6 +7087,7 @@ ADMIN_HTML = r"""<!doctype html>
           <div class="detail-row"><div class="detail-label">${esc(t('paths'))}</div><div class="detail-value">${group.items.map(c => `${esc(label(c.platform))}: ${esc(c.path)}`).join('<br>')}</div></div>
         </div>`;
       $('detailModal').classList.add('open');
+      updateDetailCloseButton();
     }
     function closeDetails() {
       const smartOpen = isSmartPanelOpen();
@@ -7060,6 +7096,7 @@ ADMIN_HTML = r"""<!doctype html>
         smartPanelVisible = false;
         updateSmartJobFloat(state.smart_job);
       }
+      updateDetailCloseButton();
     }
     async function openUpdate(groupKey, forceRemote = false) {
       const group = groupByKey(groupKey);
