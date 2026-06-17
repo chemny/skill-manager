@@ -1854,6 +1854,13 @@ def smart_upgrade_job_status(job_id: str) -> Dict[str, Any]:
     with SMART_UPGRADE_LOCK:
         job = SMART_UPGRADE_JOBS.get(job_id)
         if job:
+            if job.get("status") == "running":
+                updated = parse_iso_datetime(str(job.get("updated_at") or ""))
+                if updated and dt.datetime.now(dt.timezone.utc).astimezone() - updated > dt.timedelta(minutes=10):
+                    job["status"] = "error"
+                    job["error"] = "The previous scan was interrupted. Start a new scan or retry the remaining items."
+                    job["finished_at"] = now_iso()
+                    Registry().save_background_job(job)
             return dict(job)
     persisted = Registry().background_job(job_id)
     if not persisted:
@@ -5155,6 +5162,17 @@ ADMIN_HTML = r"""<!doctype html>
         channelSuccessRate: 'Success rate',
         channelLastUsed: 'Last used',
         channelLastError: 'Last error',
+        channelState: 'State',
+        channelStateAvailable: 'Available',
+        channelStatePartial: 'Partially available',
+        channelStateRateLimited: 'Rate limited',
+        channelStateUnused: 'Unused',
+        channelStateUnavailable: 'Unavailable',
+        channelStateAvailableHelp: 'Recent checks or downloads succeeded.',
+        channelStatePartialHelp: 'Some requests succeeded, but some candidates failed later.',
+        channelStateRateLimitedHelp: 'The channel is reachable, but API limits were hit.',
+        channelStateUnusedHelp: 'No local skill is using this channel yet.',
+        channelStateUnavailableHelp: 'Only failures were recorded recently.',
         deleteChannelConfirm: name => `Delete update channel ${name}? Existing stats will be kept, but the channel will no longer be used.`,
         adviceReason: 'Reason',
         adviceIntro: 'Choose a scan scope, then check updates, health issues, incomplete information, and duplicates. Changes still require confirmation.',
@@ -5170,6 +5188,7 @@ ADMIN_HTML = r"""<!doctype html>
         smartScopeImportanceDesc: 'Check important, regular, or other skills first.',
         smartScopeResult: 'Scan scope',
         smartInterrupted: 'Scan interrupted',
+        smartInterruptedReason: 'The last check was interrupted. Start a new check when you are ready.',
         smartNewScan: 'Start another scan',
         smartStop: 'Stop check',
         smartStopping: 'Stopping check',
@@ -5387,6 +5406,17 @@ ADMIN_HTML = r"""<!doctype html>
         channelSuccessRate: '成功率',
         channelLastUsed: '最近使用',
         channelLastError: '最近错误',
+        channelState: '状态',
+        channelStateAvailable: '可用',
+        channelStatePartial: '部分可用',
+        channelStateRateLimited: '限流',
+        channelStateUnused: '未使用',
+        channelStateUnavailable: '不可用',
+        channelStateAvailableHelp: '最近检查或下载有成功记录。',
+        channelStatePartialHelp: '有成功记录，但部分候选源后续校验或下载失败。',
+        channelStateRateLimitedHelp: '渠道可以访问，但接口请求次数受限。',
+        channelStateUnusedHelp: '当前还没有本地 skill 使用这个渠道。',
+        channelStateUnavailableHelp: '最近只有失败记录。',
         deleteChannelConfirm: name => `确认删除更新渠道 ${name} 吗？历史统计会保留，但后续不会再使用这个渠道。`,
         adviceReason: '原因',
         adviceIntro: '选择扫描范围后，检测更新、健康异常、信息不完整和重复项。真正修改前仍会二次确认。',
@@ -5402,6 +5432,7 @@ ADMIN_HTML = r"""<!doctype html>
         smartScopeImportanceDesc: '优先检查重要、常规或其他等级。',
         smartScopeResult: '扫描范围',
         smartInterrupted: '检测中断',
+        smartInterruptedReason: '上一次检测已经中断。可以关闭窗口，或者重新开始检测。',
         smartNewScan: '重新选择扫描',
         smartStop: '停止检测',
         smartStopping: '正在停止检测',
@@ -6346,6 +6377,7 @@ ADMIN_HTML = r"""<!doctype html>
     function updateChannelTable(channels) {
       return `<div class="choice-list">${channels.map(channel => {
         const rate = Math.round(Number(channel.success_rate || 0) * 100);
+        const state = updateChannelState(channel);
         const stats = [
           Number(channel.searches || 0) > 0 ? `${t('channelSearches')}: ${channel.searches || 0}` : '',
           `${t('channelChecks')}: ${channel.checks || 0}`,
@@ -6356,8 +6388,9 @@ ADMIN_HTML = r"""<!doctype html>
         return `
           <div class="choice">
             <div>
-              <strong>${esc(channel.label || channel.name)} <span class="pill">${esc(channel.name)}</span> <span class="pill ${channel.enabled ? 'score-good' : 'score-mid'}">${esc(channel.enabled ? t('active') : t('inactive'))}</span></strong>
+              <strong>${esc(channel.label || channel.name)} <span class="pill">${esc(channel.name)}</span> <span class="pill ${channel.enabled ? 'score-good' : 'score-mid'}">${esc(channel.enabled ? t('active') : t('inactive'))}</span> <span class="pill ${state.className}">${esc(t(state.labelKey))}</span></strong>
               <small>${esc(t('channelKind'))}: ${esc(channel.kind || '-')} · ${esc(t('channelBaseUrl'))}: ${esc(channel.base_url || '-')}</small>
+              <small>${esc(t('channelState'))}: ${esc(t(state.helpKey))}</small>
               <small>${esc(t('channelStats'))}: ${esc(stats)}</small>
               <small>${esc(t('channelScore'))}: ${esc(channel.score || 0)} · ${esc(t('channelPriority'))}: ${esc(channel.priority || 0)}${channel.last_used_at ? ` · ${esc(t('channelLastUsed'))}: ${esc(formatUsageTime(channel.last_used_at))}` : ''}</small>
               ${channel.last_error ? `<small>${esc(t('channelLastError'))}: ${esc(channel.last_error)}</small>` : ''}
@@ -6368,6 +6401,19 @@ ADMIN_HTML = r"""<!doctype html>
             </div>
           </div>`;
       }).join('')}</div>`;
+    }
+    function updateChannelState(channel) {
+      const successes = Number(channel.successes || 0);
+      const failures = Number(channel.failures || 0);
+      const total = Number(channel.total || 0);
+      const error = String(channel.last_error || '').toLowerCase();
+      if (!total) return {labelKey: 'channelStateUnused', helpKey: 'channelStateUnusedHelp', className: 'score-mid'};
+      if (error.includes('rate limit') || error.includes('quota exceeded') || error.includes('http error 429')) {
+        return {labelKey: 'channelStateRateLimited', helpKey: 'channelStateRateLimitedHelp', className: 'score-mid'};
+      }
+      if (successes > 0 && failures > 0) return {labelKey: 'channelStatePartial', helpKey: 'channelStatePartialHelp', className: 'score-mid'};
+      if (successes > 0) return {labelKey: 'channelStateAvailable', helpKey: 'channelStateAvailableHelp', className: 'score-good'};
+      return {labelKey: 'channelStateUnavailable', helpKey: 'channelStateUnavailableHelp', className: 'score-bad'};
     }
     async function addUpdateChannel() {
       const payload = {
@@ -6404,7 +6450,7 @@ ADMIN_HTML = r"""<!doctype html>
       } else if (job && job.status === 'done' && job.result) {
         renderSmartUpgradeResult(job.result);
       } else if (job && job.status === 'error') {
-        renderSmartUpgradeStart(false, 'smartInterrupted', job.error || '');
+        renderSmartUpgradeStart(false, 'smartInterrupted', smartErrorDetail(job.error || ''));
       } else if (job && job.status === 'canceled') {
         renderSmartUpgradeStart(false, 'smartCanceled');
       } else {
@@ -6553,6 +6599,11 @@ ADMIN_HTML = r"""<!doctype html>
         ensureSmartPolling(start.job_id);
       } catch(e) {
         stopLoadingDots();
+        stopSmartPolling();
+        if (isSmartInterruptedMessage(e.message)) {
+          if (isSmartPanelOpen()) renderSmartUpgradeStart(false, 'smartInterrupted', t('smartInterruptedReason'));
+          return;
+        }
         toast(e.message);
       }
     }
@@ -6598,7 +6649,7 @@ ADMIN_HTML = r"""<!doctype html>
           return;
         }
         if (job.status === 'error') {
-          if (isSmartPanelOpen()) renderSmartUpgradeStart(false, 'smartInterrupted', job.error || '');
+          if (isSmartPanelOpen()) renderSmartUpgradeStart(false, 'smartInterrupted', smartErrorDetail(job.error || ''));
         }
       } catch(e) {
         stopLoadingDots();
@@ -6608,6 +6659,12 @@ ADMIN_HTML = r"""<!doctype html>
     function renderSmartUpgradeJob(job) {
       currentSmartJob = job;
       renderSmartUpgradeStart(true, smartStageKey(job.stage), smartProgressDetail(job));
+    }
+    function isSmartInterruptedMessage(message) {
+      return String(message || '').includes('previous scan was interrupted');
+    }
+    function smartErrorDetail(message) {
+      return isSmartInterruptedMessage(message) ? t('smartInterruptedReason') : message;
     }
     async function cancelSmartUpgrade() {
       const jobId = smartActiveJobId || (state.smart_job || {}).id || '';
