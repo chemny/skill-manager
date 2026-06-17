@@ -4685,10 +4685,83 @@ ADMIN_HTML = r"""<!doctype html>
     .smart-upgrade-panel {
       display: grid;
       justify-items: center;
-      gap: 14px;
-      padding: 54px 12px 34px;
+      gap: 18px;
+      padding: 34px 12px 30px;
       text-align: center;
     }
+    .smart-scope-panel {
+      width: min(720px, 100%);
+      display: grid;
+      gap: 14px;
+      text-align: left;
+    }
+    .smart-scope-options {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .smart-scope-card {
+      border: 1px solid var(--line);
+      background: #fffaf0;
+      border-radius: 8px;
+      padding: 14px;
+      min-height: 96px;
+      cursor: pointer;
+      display: grid;
+      align-content: start;
+      gap: 8px;
+      transition: border-color .12s ease, box-shadow .12s ease, background .12s ease;
+    }
+    .smart-scope-card:hover {
+      border-color: rgba(15,118,110,.45);
+      box-shadow: 0 8px 20px rgba(23,32,27,.07);
+    }
+    .smart-scope-card.selected {
+      border-color: var(--accent);
+      background: #eef8f5;
+      box-shadow: inset 0 0 0 1px rgba(15,118,110,.22);
+    }
+    .smart-scope-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      font-weight: 800;
+      font-size: 13px;
+    }
+    .smart-scope-dot {
+      width: 14px;
+      height: 14px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      flex: 0 0 auto;
+    }
+    .smart-scope-card.selected .smart-scope-dot {
+      border-color: var(--accent);
+      background: radial-gradient(circle at center, var(--accent) 0 42%, transparent 46%);
+    }
+    .smart-scope-desc {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .smart-scope-extra {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fffdf7;
+      padding: 12px;
+      display: grid;
+      grid-template-columns: 120px minmax(0, 1fr);
+      gap: 10px;
+      align-items: center;
+    }
+    .smart-scope-extra label {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+    .smart-scope-extra select { width: 100%; }
     .smart-upgrade-panel .primary {
       min-width: 180px;
       justify-content: center;
@@ -4720,6 +4793,8 @@ ADMIN_HTML = r"""<!doctype html>
       .metrics { grid-template-columns: repeat(2, 1fr); }
       .filters { grid-template-columns: 1fr; }
       .table-shell { max-height: none; }
+      .smart-scope-options { grid-template-columns: 1fr; }
+      .smart-scope-extra { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -4897,6 +4972,9 @@ ADMIN_HTML = r"""<!doctype html>
         smartScopeAll: 'Full scan',
         smartScopePlatform: 'By platform',
         smartScopeImportance: 'By grade',
+        smartScopeAllDesc: 'Check every skill in the registry.',
+        smartScopePlatformDesc: 'Check only one Agent platform.',
+        smartScopeImportanceDesc: 'Check important, regular, or other skills first.',
         smartScopeResult: 'Scan scope',
         smartInterrupted: 'Scan interrupted',
         smartNewScan: 'Start another scan',
@@ -5113,6 +5191,9 @@ ADMIN_HTML = r"""<!doctype html>
         smartScopeAll: '全量扫描',
         smartScopePlatform: '按平台扫描',
         smartScopeImportance: '按等级扫描',
+        smartScopeAllDesc: '检查当前登记的全部 skills。',
+        smartScopePlatformDesc: '只检查某一个 Agent 平台。',
+        smartScopeImportanceDesc: '优先检查重要、常规或其他等级。',
         smartScopeResult: '扫描范围',
         smartInterrupted: '检测中断',
         smartNewScan: '重新选择扫描',
@@ -6106,20 +6187,21 @@ ADMIN_HTML = r"""<!doctype html>
     function renderSmartUpgradeStart(running, statusKey, detail = '') {
       const detailText = detail ? `：${detail}` : '';
       const controls = running ? '' : `
-          <div class="detail-grid" style="margin: 0 auto 16px; max-width: 560px; text-align:left">
-            <div class="detail-row"><div class="detail-label">${esc(t('smartScope'))}</div><div class="detail-value">
-              <select id="smartScopeType" onchange="updateSmartScopeControls()">
-                <option value="all">${esc(t('smartScopeAll'))}</option>
-                <option value="platform">${esc(t('smartScopePlatform'))}</option>
-                <option value="importance">${esc(t('smartScopeImportance'))}</option>
-              </select>
-            </div></div>
-            <div class="detail-row" id="smartPlatformRow" style="display:none"><div class="detail-label">${esc(t('platform'))}</div><div class="detail-value">
+          <div class="smart-scope-panel">
+            <input id="smartScopeType" type="hidden" value="all">
+            <div class="smart-scope-options">
+              ${smartScopeCard('all', t('smartScopeAll'), t('smartScopeAllDesc'))}
+              ${smartScopeCard('platform', t('smartScopePlatform'), t('smartScopePlatformDesc'))}
+              ${smartScopeCard('importance', t('smartScopeImportance'), t('smartScopeImportanceDesc'))}
+            </div>
+            <div class="smart-scope-extra" id="smartPlatformRow" style="display:none">
+              <label>${esc(t('platform'))}</label>
               <select id="smartPlatform">${['shared','codex','claude_code','openclaw','hermes'].map(p => `<option value="${p}">${esc(label(p))}</option>`).join('')}</select>
-            </div></div>
-            <div class="detail-row" id="smartImportanceRow" style="display:none"><div class="detail-label">${esc(t('importance'))}</div><div class="detail-value">
+            </div>
+            <div class="smart-scope-extra" id="smartImportanceRow" style="display:none">
+              <label>${esc(t('importance'))}</label>
               <select id="smartImportance">${['important','normal','low'].map(v => `<option value="${v}">${esc(t(v))}</option>`).join('')}</select>
-            </div></div>
+            </div>
           </div>`;
       $('detailBody').innerHTML = `
         <div class="smart-upgrade-panel">
@@ -6127,6 +6209,21 @@ ADMIN_HTML = r"""<!doctype html>
           <button class="primary" onclick="runSmartUpgrade()" ${running ? 'disabled' : ''}>${esc(running ? t('smartRunning') : t('smartRun'))}</button>
           <div class="smart-upgrade-hint">${esc(t(statusKey))}${esc(detailText)}${running ? '<span class="loading-dots">...</span>' : ''}</div>
         </div>`;
+      updateSmartScopeControls();
+    }
+    function smartScopeCard(value, title, desc) {
+      return `
+        <button type="button" class="smart-scope-card ${value === 'all' ? 'selected' : ''}" data-smart-scope="${esc(value)}" onclick='selectSmartScope(${JSON.stringify(value)})'>
+          <span class="smart-scope-title"><span>${esc(title)}</span><span class="smart-scope-dot"></span></span>
+          <span class="smart-scope-desc">${esc(desc)}</span>
+        </button>`;
+    }
+    function selectSmartScope(type) {
+      if ($('smartScopeType')) $('smartScopeType').value = type;
+      document.querySelectorAll('[data-smart-scope]').forEach(card => {
+        card.classList.toggle('selected', card.dataset.smartScope === type);
+      });
+      updateSmartScopeControls();
     }
     function updateSmartScopeControls() {
       const type = $('smartScopeType') ? $('smartScopeType').value : 'all';
