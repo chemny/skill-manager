@@ -61,12 +61,11 @@ GITCODE_GH_MIRROR_BASE = "https://gitcode.com/gh_mirrors"
 DEFAULT_UPDATE_CHANNELS: List[Dict[str, Any]] = [
     {"name": "github", "label": "GitHub", "kind": "canonical", "base_url": "https://api.github.com", "priority": 80, "builtin": True},
     {"name": "gitcode", "label": "GitCode", "kind": "mirror", "base_url": GITCODE_GH_MIRROR_BASE, "priority": 70, "builtin": True},
-    {"name": "gitee", "label": "Gitee", "kind": "repository", "base_url": "https://gitee.com", "priority": 65, "builtin": True},
-    {"name": "gitlab", "label": "GitLab", "kind": "repository", "base_url": "https://gitlab.com", "priority": 55, "builtin": True},
     {"name": "skillsmp", "label": "SkillsMP", "kind": "discovery", "base_url": "https://skillsmp.com", "priority": 50, "builtin": True},
     {"name": "find-skills", "label": "find-skills", "kind": "discovery", "base_url": "npx skills find", "priority": 45, "builtin": True},
     {"name": "local", "label": "Local Versions", "kind": "local", "base_url": "local", "priority": 30, "builtin": True},
 ]
+LEGACY_OPTIONAL_CHANNELS = {"gitee", "gitlab"}
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "version": 1,
@@ -774,6 +773,13 @@ class Registry:
             total = int(stats["total"] or 0)
             successes = int(stats["successes"] or 0)
             failures = int(stats["failures"] or 0)
+            dependent = self.conn.execute(
+                "select count(*) n from capabilities where source_type=?",
+                (row["name"],),
+            ).fetchone()
+            dependent_count = int(dependent["n"] or 0) if dependent else 0
+            if row["name"] in LEGACY_OPTIONAL_CHANNELS and total == 0 and dependent_count == 0:
+                continue
             success_rate = round(successes / total, 4) if total else 0.0
             score = int(row["priority"] or 0) + round(success_rate * 100) + min(successes, 25) * 2 - min(failures, 20)
             items.append(
@@ -791,6 +797,7 @@ class Registry:
                     "updates": int(stats["updates"] or 0),
                     "successes": successes,
                     "failures": failures,
+                    "dependent_count": dependent_count,
                     "total": total,
                     "success_rate": success_rate,
                     "score": score,
