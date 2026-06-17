@@ -46,7 +46,7 @@ BACKUP_DIR = APP_DIR / "backups"
 LOG_DIR = APP_DIR / "logs"
 VERSION_PART_RE = re.compile(r"^\d+(?:\.\d+)+(?:[-+][A-Za-z0-9_.-]+)?$")
 SKILL_MD_PATH_RE = re.compile(r"(?:~|/Users/[^\s\"'`<>]+|/opt/[^\s\"'`<>]+)[^\s\"'`<>]*?/SKILL\.md")
-REMOTE_UPDATE_CACHE_TTL = dt.timedelta(hours=24)
+REMOTE_UPDATE_CACHE_TTL = dt.timedelta(hours=1)
 SMART_UPDATE_ITEM_TIMEOUT_SECONDS = 45
 SMART_UPDATE_MAX_WORKERS = 8
 SMART_UPGRADE_JOBS: Dict[str, Dict[str, Any]] = {}
