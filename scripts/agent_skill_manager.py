@@ -4989,7 +4989,7 @@ ADMIN_HTML = r"""<!doctype html>
       </div>
       <div class="actions">
         <button class="primary" onclick="scan()" data-i18n="syncScan">Sync Scan</button>
-        <button onclick="showRecommendations()" data-i18n="recommendations">Smart Scan</button>
+        <button onclick="showRecommendations()" data-i18n="recommendations">Smart Update</button>
         <button onclick="refreshPage()" data-i18n="refresh">Refresh</button>
         <details class="more-menu">
           <summary data-i18n="moreActions">More</summary>
@@ -5117,7 +5117,7 @@ ADMIN_HTML = r"""<!doctype html>
         snapshotExport: 'Export Report',
         sourceManagement: 'Source Management',
         updateChannelManagement: 'Update Channels',
-        recommendations: 'Smart Scan',
+        recommendations: 'Smart Update',
         operationLog: 'Operation Log',
         installSkill: 'Install Skill',
         installUrl: 'Skill link',
@@ -5158,7 +5158,7 @@ ADMIN_HTML = r"""<!doctype html>
         deleteChannelConfirm: name => `Delete update channel ${name}? Existing stats will be kept, but the channel will no longer be used.`,
         adviceReason: 'Reason',
         adviceIntro: 'Choose a scan scope, then check updates, health issues, incomplete information, and duplicates. Changes still require confirmation.',
-        smartRun: 'Skills Smart Check',
+        smartRun: 'Start Check',
         smartRunning: 'Checking',
         smartHint: 'Choose a scope and check whether matching skills are working normally.',
         smartScope: 'Scan scope',
@@ -5171,10 +5171,10 @@ ADMIN_HTML = r"""<!doctype html>
         smartScopeResult: 'Scan scope',
         smartInterrupted: 'Scan interrupted',
         smartNewScan: 'Start another scan',
-        smartStop: 'Stop scan',
-        smartStopping: 'Stopping scan',
-        smartCanceled: 'Scan stopped',
-        smartFloatRunning: 'Scanning',
+        smartStop: 'Stop check',
+        smartStopping: 'Stopping check',
+        smartCanceled: 'Check stopped',
+        smartFloatRunning: 'Checking',
         smartFloatDone: 'Scan complete',
         smartFloatError: 'Scan failed',
         smartFloatCanceled: 'Scan stopped',
@@ -5349,7 +5349,7 @@ ADMIN_HTML = r"""<!doctype html>
         snapshotExport: '导出报告',
         sourceManagement: '来源管理',
         updateChannelManagement: '更新渠道管理',
-        recommendations: '智能扫描',
+        recommendations: '智能更新',
         operationLog: '操作日志',
         installSkill: '安装 Skill',
         installUrl: 'Skill 链接',
@@ -5390,7 +5390,7 @@ ADMIN_HTML = r"""<!doctype html>
         deleteChannelConfirm: name => `确认删除更新渠道 ${name} 吗？历史统计会保留，但后续不会再使用这个渠道。`,
         adviceReason: '原因',
         adviceIntro: '选择扫描范围后，检测更新、健康异常、信息不完整和重复项。真正修改前仍会二次确认。',
-        smartRun: 'Skills 智能检测',
+        smartRun: '开始检测',
         smartRunning: '检测中',
         smartHint: '选择扫描范围后，检测对应 skills 是否正常。',
         smartScope: '扫描范围',
@@ -5403,10 +5403,10 @@ ADMIN_HTML = r"""<!doctype html>
         smartScopeResult: '扫描范围',
         smartInterrupted: '检测中断',
         smartNewScan: '重新选择扫描',
-        smartStop: '停止扫描',
-        smartStopping: '正在停止扫描',
-        smartCanceled: '扫描已停止',
-        smartFloatRunning: '扫描中',
+        smartStop: '停止检测',
+        smartStopping: '正在停止检测',
+        smartCanceled: '检测已停止',
+        smartFloatRunning: '检测中',
         smartFloatDone: '扫描完成',
         smartFloatError: '扫描异常',
         smartFloatCanceled: '已停止',
@@ -6347,12 +6347,12 @@ ADMIN_HTML = r"""<!doctype html>
       return `<div class="choice-list">${channels.map(channel => {
         const rate = Math.round(Number(channel.success_rate || 0) * 100);
         const stats = [
-          `${t('channelSearches')}: ${channel.searches || 0}`,
+          Number(channel.searches || 0) > 0 ? `${t('channelSearches')}: ${channel.searches || 0}` : '',
           `${t('channelChecks')}: ${channel.checks || 0}`,
           `${t('channelDownloads')}: ${channel.downloads || 0}`,
           `${t('channelUpdates')}: ${channel.updates || 0}`,
           `${t('channelSuccessRate')}: ${rate}%`
-        ].join(' · ');
+        ].filter(Boolean).join(' · ');
         return `
           <div class="choice">
             <div>
@@ -6438,8 +6438,9 @@ ADMIN_HTML = r"""<!doctype html>
           ${controls}
           ${progress}
           <div class="smart-upgrade-actions">
-            <button class="primary" onclick="runSmartUpgrade()" ${running ? 'disabled' : ''}>${esc(running ? t('smartRunning') : t('smartRun'))}</button>
-            ${running ? `<button onclick="cancelSmartUpgrade()">${esc(t('smartStop'))}</button>` : ''}
+            ${running
+              ? `<button class="primary" onclick="cancelSmartUpgrade()">${esc(t('smartStop'))}</button>`
+              : `<button class="primary" onclick="runSmartUpgrade()">${esc(t('smartRun'))}</button>`}
           </div>
           <div class="smart-upgrade-hint">${esc(t(statusKey))}${esc(detailText)}${running ? '<span class="loading-dots">...</span>' : ''}</div>
         </div>`;
