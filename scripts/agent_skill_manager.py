@@ -185,6 +185,10 @@ def parse_frontmatter(path: Path) -> Dict[str, Any]:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         text = path.read_text(encoding="utf-8", errors="ignore")
+    return parse_frontmatter_text(text)
+
+
+def parse_frontmatter_text(text: str) -> Dict[str, Any]:
     match = re.match(r"^---\s*\r?\n(.*?)\r?\n---", text, re.S)
     if not match:
         return {}
@@ -1662,7 +1666,7 @@ def smart_upgrade_check(progress: Optional[Any] = None, use_cache: bool = True, 
         candidates = managed_rows(group)
         name = candidates[0]["name"]
         try:
-            result = check_group_update([row["id"] for row in candidates], force_remote=False, remember_terminal=False)
+            result = check_group_update([row["id"] for row in candidates], force_remote=False, remember_terminal=False, allow_discovery=False)
             summary = {
                 "name": name,
                 "status": result.get("status"),
@@ -2583,6 +2587,106 @@ def latest_git_hash_for_ref(url: str, branch: str = "") -> str:
     return first.split()[0] if first else ""
 
 
+def remote_skill_candidate_paths(row: sqlite3.Row, info: Dict[str, str]) -> List[Tuple[str, bool]]:
+    values = [
+        str(row["github_path"] or ""),
+        str(info.get("path") or ""),
+    ]
+    local_folder = Path(row["path"]).name
+    skill_hint = str(info.get("skill") or "")
+    guesses = [
+        f"skills/{local_folder}/SKILL.md",
+        f"{local_folder}/SKILL.md",
+        f"skills/{row['name']}/SKILL.md",
+        f"{row['name']}/SKILL.md",
+    ]
+    if skill_hint:
+        guesses.extend([f"skills/{skill_hint}/SKILL.md", f"{skill_hint}/SKILL.md"])
+    candidates: List[Tuple[str, bool]] = []
+    seen: set[str] = set()
+    for value in values:
+        clean = value.strip("/")
+        if not clean:
+            continue
+        options = [clean] if clean.lower().endswith("skill.md") else [f"{clean}/SKILL.md"]
+        for option in options:
+            if option not in seen:
+                seen.add(option)
+                candidates.append((option, True))
+    for value in guesses:
+        clean = value.strip("/")
+        if clean and clean not in seen:
+            seen.add(clean)
+            candidates.append((clean, False))
+    return candidates[:10]
+
+
+def read_remote_skill_file(info: Dict[str, str], branch: str, rel_path: str) -> str:
+    provider = info.get("provider") or "github"
+    encoded_path = "/".join(urllib.parse.quote(part) for part in rel_path.strip("/").split("/"))
+    if provider == "github":
+        url = f"https://raw.githubusercontent.com/{info['owner']}/{info['repo']}/{urllib.parse.quote(branch, safe='')}/{encoded_path}"
+    elif provider == "gitlab":
+        url = f"https://gitlab.com/{info['project']}/-/raw/{urllib.parse.quote(branch, safe='')}/{encoded_path}"
+    elif provider == "gitee":
+        url = f"https://gitee.com/{info['owner']}/{info['repo']}/raw/{urllib.parse.quote(branch, safe='')}/{encoded_path}"
+    elif provider == "gitcode":
+        url = f"https://gitcode.com/{info['project']}/raw/{urllib.parse.quote(branch, safe='')}/{encoded_path}"
+    else:
+        raise ValueError(f"Lightweight remote file reads are not supported for {provider}.")
+    return read_http_text(url, headers={"Accept": "text/plain"}, timeout=12, retries=0)
+
+
+def lightweight_remote_skill_snapshot(
+    row: sqlite3.Row,
+    info: Dict[str, str],
+    branch: str,
+    provider: str,
+    source_url: str,
+    discovered_by: str,
+    registry: Registry,
+) -> Optional[Dict[str, Any]]:
+    if not branch:
+        return None
+    wanted = {normalized_skill_name(row["name"]), normalized_skill_name(Path(row["path"]).name), normalized_skill_name(str(info.get("skill") or ""))}
+    wanted.discard("")
+    last_error: Optional[BaseException] = None
+    for rel_path, trusted in remote_skill_candidate_paths(row, info):
+        started = time.time()
+        try:
+            text = read_remote_skill_file(info, branch, rel_path)
+            metadata = parse_frontmatter_text(text)
+            if not metadata:
+                continue
+            remote_name = normalized_skill_name(str(metadata.get("name") or Path(rel_path).parent.name))
+            if not trusted and wanted and remote_name not in wanted and normalized_skill_name(Path(rel_path).parent.name) not in wanted:
+                continue
+            remote_hash = latest_commit_for_repo_path(info, branch, rel_path)
+            snapshot = upsert_remote_snapshot(
+                registry,
+                {
+                    "skill_name": row["name"],
+                    "source_type": "github" if info.get("mirror_provider") else provider,
+                    "source_url": source_url,
+                    "source_ref": branch,
+                    "source_path": str(Path(rel_path).parent).replace("\\", "/"),
+                    "remote_version": str(metadata.get("version") or "unknown"),
+                    "remote_hash": remote_hash,
+                    "discovered_by": discovered_by,
+                    "confidence": "high" if trusted or discovered_by == "metadata" else "medium",
+                    "message": "Remote version snapshot refreshed from SKILL.md.",
+                },
+            )
+            record_channel_event(provider, "check", "success", row["name"], f"SKILL.md: {rel_path}", started)
+            return snapshot
+        except (urllib.error.HTTPError, urllib.error.URLError, ValueError, OSError) as exc:
+            last_error = exc
+            continue
+    if last_error:
+        record_channel_event(provider, "check", "failure", row["name"], f"Lightweight SKILL.md check failed: {last_error}")
+    return None
+
+
 def download_gitee_repository(info: Dict[str, str], branch: str, tmpdir: Path) -> Path:
     repo_root = clone_git_repository(git_repo_url(info), tmpdir, branch)
     info["resolved_ref"] = current_git_branch(repo_root, branch)
@@ -3253,6 +3357,7 @@ def fetch_remote_snapshot_for_info(
     info: Dict[str, str],
     discovered_by: str,
     registry: Registry,
+    allow_download: bool = False,
 ) -> Dict[str, Any]:
     provider = info.get("provider") or "github"
     if provider != "github" and not channel_enabled(provider):
@@ -3281,6 +3386,11 @@ def fetch_remote_snapshot_for_info(
                 branch = ""
         source_url = f"https://github.com/{info['owner']}/{info['repo']}"
         source_label = f"{info['owner']}/{info['repo']}"
+    lightweight = lightweight_remote_skill_snapshot(row, info, branch, provider, source_url, discovered_by, registry)
+    if lightweight:
+        return lightweight
+    if not allow_download:
+        raise ValueError("Remote SKILL.md could not be checked without downloading the repository.")
     with tempfile.TemporaryDirectory(prefix="asm-update-") as tmp:
         repo_root = download_remote_archive(info, branch, Path(tmp))
         branch = info.get("resolved_ref") or branch
@@ -3434,7 +3544,7 @@ def update_gate_for_rows(registry: Registry, rows: Sequence[sqlite3.Row]) -> Dic
     }
 
 
-def check_group_update(ids: Sequence[str], force_remote: bool = False, remember_terminal: bool = True) -> Dict[str, Any]:
+def check_group_update(ids: Sequence[str], force_remote: bool = False, remember_terminal: bool = True, allow_discovery: bool = True) -> Dict[str, Any]:
     registry = Registry()
     selected_rows = rows_for_ids(registry, ids)
     if not selected_rows:
@@ -3506,6 +3616,24 @@ def check_group_update(ids: Sequence[str], force_remote: bool = False, remember_
         except (urllib.error.HTTPError, urllib.error.URLError, ValueError) as exc:
             remote_errors.append(remote_error_summary(info.get("provider", "remote"), exc))
             record_channel_event(info.get("provider", "remote"), "check", "failure", base["name"], str(exc))
+
+    if not allow_discovery:
+        message = "No newer version was found. No bound lightweight update source was available."
+        result = local_update_fallback(
+            rows,
+            local_versions,
+            max_local,
+            message,
+            {
+                "status": "latest" if len(local_versions) <= 1 else "local_mismatch",
+                "cache_hit": False,
+                "checked_at": now_iso(),
+                "skipped_targets": skipped,
+                "remote_errors": remote_errors,
+            },
+        )
+        record_channel_event("local", "check", "success", primary["name"], result["status"])
+        return result
 
     found_any_remote_candidate = False
     try:
