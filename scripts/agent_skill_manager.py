@@ -47,6 +47,8 @@ LOG_DIR = APP_DIR / "logs"
 VERSION_PART_RE = re.compile(r"^\d+(?:\.\d+)+(?:[-+][A-Za-z0-9_.-]+)?$")
 SKILL_MD_PATH_RE = re.compile(r"(?:~|/Users/[^\s\"'`<>]+|/opt/[^\s\"'`<>]+)[^\s\"'`<>]*?/SKILL\.md")
 REMOTE_UPDATE_CACHE_TTL = dt.timedelta(hours=24)
+SMART_UPDATE_ITEM_TIMEOUT_SECONDS = 45
+SMART_UPDATE_MAX_WORKERS = 8
 SMART_UPGRADE_JOBS: Dict[str, Dict[str, Any]] = {}
 SMART_UPGRADE_LOCK = threading.Lock()
 
@@ -1635,20 +1637,68 @@ def smart_upgrade_check(progress: Optional[Any] = None, use_cache: bool = True, 
                 return name, candidates, {"name": name, "status": "rate_limited", "message": "Remote update check was skipped because GitHub rate limit was reached."}, None
             return name, candidates, {"name": name, "status": "error", "message": str(exc)}, payload("metadata", "low", name, candidates, f"Update check failed: {exc}")
 
+    def record_update_check_result(name: str, candidates: List[Dict[str, Any]], summary: Dict[str, Any], item: Optional[Dict[str, Any]]) -> None:
+        nonlocal checked_updates
+        checked_updates += 1
+        if progress:
+            progress("update", str(name), checked_updates, len(update_groups))
+        update_results.append(summary)
+        if job_id:
+            Registry().save_smart_upgrade_item(job_id, str(name), str(summary.get("status") or "checked"), summary, item)
+        if item:
+            items.append(item)
+
     checked_updates = 0
     if update_groups:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(update_groups))) as executor:
-            futures = [executor.submit(update_group_result, group) for _, group in update_groups]
-            for future in concurrent.futures.as_completed(futures):
-                name, _candidates, summary, item = future.result()
-                checked_updates += 1
-                if progress:
-                    progress("update", str(name), checked_updates, len(update_groups))
-                update_results.append(summary)
-                if job_id:
-                    Registry().save_smart_upgrade_item(job_id, str(name), str(summary.get("status") or "checked"), summary, item)
-                if item:
-                    items.append(item)
+        max_workers = min(SMART_UPDATE_MAX_WORKERS, len(update_groups))
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        pending: Dict[concurrent.futures.Future, Dict[str, Any]] = {}
+        next_index = 0
+
+        def submit_more() -> None:
+            nonlocal next_index
+            while next_index < len(update_groups) and len(pending) < max_workers:
+                _key, group = update_groups[next_index]
+                candidates = managed_rows(group)
+                name = candidates[0]["name"]
+                future = executor.submit(update_group_result, group)
+                pending[future] = {"name": name, "candidates": candidates, "started": time.time()}
+                next_index += 1
+
+        try:
+            submit_more()
+            while pending:
+                done, _not_done = concurrent.futures.wait(
+                    list(pending.keys()),
+                    timeout=1,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                for future in done:
+                    meta = pending.pop(future)
+                    try:
+                        name, candidates, summary, item = future.result()
+                    except Exception as exc:
+                        name = str(meta["name"])
+                        candidates = list(meta["candidates"])
+                        summary = {"name": name, "status": "error", "message": str(exc)}
+                        item = payload("metadata", "low", name, candidates, f"Update check failed: {exc}")
+                    record_update_check_result(name, candidates, summary, item)
+
+                now = time.time()
+                for future, meta in list(pending.items()):
+                    if now - float(meta["started"]) < SMART_UPDATE_ITEM_TIMEOUT_SECONDS:
+                        continue
+                    pending.pop(future)
+                    future.cancel()
+                    name = str(meta["name"])
+                    candidates = list(meta["candidates"])
+                    message = f"Update check timed out after {SMART_UPDATE_ITEM_TIMEOUT_SECONDS} seconds."
+                    summary = {"name": name, "status": "timeout", "message": message}
+                    item = payload("metadata", "low", name, candidates, message)
+                    record_update_check_result(name, candidates, summary, item)
+                submit_more()
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     if progress:
         progress("health", "", 0, 0)
@@ -2467,7 +2517,7 @@ def clone_git_repository(url: str, tmpdir: Path, branch: str = "") -> Path:
     if branch:
         cmd.extend(["--branch", branch])
     cmd.extend([url, str(target)])
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=90, check=False)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=35, check=False)
     if result.returncode != 0:
         raise ValueError((result.stderr or result.stdout or "Git clone failed.").strip())
     return target
@@ -5240,6 +5290,7 @@ ADMIN_HTML = r"""<!doctype html>
         reasonRemoteMetadata: 'Remote update tracking metadata is incomplete.',
         reasonHealth: 'Health score is below 60.',
         reasonHealthCheck: 'Health check found issues.',
+        reasonUpdateTimeout: 'Update check timed out. This skill was skipped and the rest of the check continued.',
         reasonRemoteNewer: version => `Cloud version is newer: ${version}.`,
         reasonMissingPath: 'Path is missing for one or more copies.',
         reasonVersionsDiffer: versions => `Local versions differ: ${versions}.`,
@@ -5484,6 +5535,7 @@ ADMIN_HTML = r"""<!doctype html>
         reasonRemoteMetadata: '远程更新追踪信息不完整。',
         reasonHealth: '健康分低于 60。',
         reasonHealthCheck: '健康检查发现异常。',
+        reasonUpdateTimeout: '更新检查超时，已跳过这个 skill，并继续检测后续项目。',
         reasonRemoteNewer: version => `云端版本更新：${version}。`,
         reasonMissingPath: '一个或多个副本的路径不存在。',
         reasonVersionsDiffer: versions => `本地版本不一致：${versions}。`,
@@ -5684,6 +5736,7 @@ ADMIN_HTML = r"""<!doctype html>
       if (reason === 'Remote update tracking metadata is incomplete.') return t('reasonRemoteMetadata');
       if (reason === 'Health score is below 60.') return t('reasonHealth');
       if (reason === 'Health check found issues.') return t('reasonHealthCheck');
+      if (reason.startsWith('Update check timed out after')) return t('reasonUpdateTimeout');
       if (reason === 'Path is missing for one or more copies.') return t('reasonMissingPath');
       if (reason.startsWith('Update check failed:')) return t('reasonRemoteMetadata');
       let match = reason.match(/^Local versions differ: (.*)\\.$/);
