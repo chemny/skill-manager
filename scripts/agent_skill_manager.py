@@ -432,6 +432,29 @@ class Registry:
               confidence text,
               message text
             );
+            create table if not exists skill_update_sources (
+              id integer primary key autoincrement,
+              normalized_name text not null,
+              local_path text,
+              platform text,
+              source_type text not null,
+              source_url text not null,
+              source_ref text,
+              source_path text,
+              remote_name text,
+              remote_version text,
+              remote_hash text,
+              confidence text,
+              discovered_by text,
+              last_checked_at text,
+              last_success_at text,
+              failure_count integer default 0,
+              disabled integer default 0,
+              message text,
+              unique(normalized_name, source_url, source_path)
+            );
+            create index if not exists idx_skill_update_sources_lookup
+            on skill_update_sources(normalized_name, disabled, failure_count);
             create table if not exists update_channels (
               name text primary key,
               label text not null,
@@ -513,6 +536,7 @@ class Registry:
         )
         self.conn.commit()
         self.ensure_default_update_channels()
+        self.migrate_remote_snapshots_to_update_sources()
 
     def ensure_default_update_channels(self) -> None:
         stamp = now_iso()
@@ -537,6 +561,136 @@ class Registry:
                     stamp,
                 ),
             )
+        self.conn.commit()
+
+    def migrate_remote_snapshots_to_update_sources(self) -> None:
+        existing = self.conn.execute("select count(*) c from skill_update_sources").fetchone()
+        if int((existing or {})["c"] or 0) > 0:
+            return
+        rows = self.conn.execute("select * from remote_snapshots").fetchall()
+        for row in rows:
+            self.upsert_skill_update_source(
+                {
+                    "skill_name": row["skill_name"],
+                    "normalized_name": row["normalized_name"],
+                    "source_type": row["source_type"],
+                    "source_url": row["source_url"],
+                    "source_ref": row["source_ref"] or "",
+                    "source_path": row["source_path"] or "",
+                    "remote_name": row["skill_name"],
+                    "remote_version": row["remote_version"] or "unknown",
+                    "remote_hash": row["remote_hash"] or "",
+                    "confidence": row["confidence"] or "",
+                    "discovered_by": row["discovered_by"] or "snapshot-migration",
+                    "last_checked_at": row["checked_at"] or "",
+                    "last_success_at": row["checked_at"] or "",
+                    "message": row["message"] or "",
+                },
+                commit=False,
+            )
+        self.conn.commit()
+
+    def upsert_skill_update_source(self, source: Dict[str, Any], commit: bool = True) -> Dict[str, Any]:
+        stamp = now_iso()
+        skill_name = str(source.get("skill_name") or source.get("remote_name") or "")
+        data = {
+            "normalized_name": str(source.get("normalized_name") or normalized_skill_name(skill_name)),
+            "local_path": str(source.get("local_path") or ""),
+            "platform": str(source.get("platform") or ""),
+            "source_type": str(source.get("source_type") or "github"),
+            "source_url": str(source.get("source_url") or ""),
+            "source_ref": str(source.get("source_ref") or ""),
+            "source_path": str(source.get("source_path") or ""),
+            "remote_name": str(source.get("remote_name") or skill_name),
+            "remote_version": str(source.get("remote_version") or "unknown"),
+            "remote_hash": str(source.get("remote_hash") or ""),
+            "confidence": str(source.get("confidence") or ""),
+            "discovered_by": str(source.get("discovered_by") or ""),
+            "last_checked_at": str(source.get("last_checked_at") or stamp),
+            "last_success_at": str(source.get("last_success_at") or stamp),
+            "message": str(source.get("message") or ""),
+        }
+        if not data["normalized_name"] or not data["source_url"]:
+            return data
+        self.conn.execute(
+            """
+            insert into skill_update_sources (
+              normalized_name, local_path, platform, source_type, source_url, source_ref, source_path,
+              remote_name, remote_version, remote_hash, confidence, discovered_by,
+              last_checked_at, last_success_at, failure_count, disabled, message
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)
+            on conflict(normalized_name, source_url, source_path) do update set
+              local_path=coalesce(nullif(excluded.local_path, ''), skill_update_sources.local_path),
+              platform=coalesce(nullif(excluded.platform, ''), skill_update_sources.platform),
+              source_type=excluded.source_type,
+              source_ref=excluded.source_ref,
+              remote_name=excluded.remote_name,
+              remote_version=excluded.remote_version,
+              remote_hash=excluded.remote_hash,
+              confidence=excluded.confidence,
+              discovered_by=excluded.discovered_by,
+              last_checked_at=excluded.last_checked_at,
+              last_success_at=excluded.last_success_at,
+              failure_count=0,
+              disabled=0,
+              message=excluded.message
+            """,
+            (
+                data["normalized_name"],
+                data["local_path"],
+                data["platform"],
+                data["source_type"],
+                data["source_url"],
+                data["source_ref"],
+                data["source_path"],
+                data["remote_name"],
+                data["remote_version"],
+                data["remote_hash"],
+                data["confidence"],
+                data["discovered_by"],
+                data["last_checked_at"],
+                data["last_success_at"],
+                data["message"],
+            ),
+        )
+        if commit:
+            self.conn.commit()
+        return data
+
+    def skill_update_sources(self, skill_name: str, platform: str = "", local_path: str = "") -> List[Dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            select *
+            from skill_update_sources
+            where normalized_name=? and disabled=0 and failure_count < 3
+            order by
+              case when local_path != '' and local_path=? then 0 else 1 end,
+              case when platform != '' and platform=? then 0 else 1 end,
+              case confidence when 'high' then 0 when 'medium' then 1 else 2 end,
+              last_success_at desc
+            """,
+            (normalized_skill_name(skill_name), local_path, platform),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def record_skill_update_source_failure(self, source: Dict[str, Any], message: str = "") -> None:
+        self.conn.execute(
+            """
+            update skill_update_sources
+            set failure_count=failure_count + 1,
+                last_checked_at=?,
+                disabled=case when failure_count + 1 >= 3 then 1 else disabled end,
+                message=?
+            where normalized_name=? and source_url=? and source_path=?
+            """,
+            (
+                now_iso(),
+                short(message, 500),
+                source.get("normalized_name") or "",
+                source.get("source_url") or "",
+                source.get("source_path") or "",
+            ),
+        )
         self.conn.commit()
 
     def upsert_capability(self, cap: Dict[str, Any]) -> None:
@@ -2606,9 +2760,12 @@ def remote_skill_candidate_paths(row: sqlite3.Row, info: Dict[str, str]) -> List
     seen: set[str] = set()
     for value in values:
         clean = value.strip("/")
+        if clean in (".", "./"):
+            clean = ""
         if not clean:
-            continue
-        options = [clean] if clean.lower().endswith("skill.md") else [f"{clean}/SKILL.md"]
+            options = ["SKILL.md"]
+        else:
+            options = [clean] if clean.lower().endswith("skill.md") else [f"{clean}/SKILL.md"]
         for option in options:
             if option not in seen:
                 seen.add(option)
@@ -2989,6 +3146,26 @@ def install_skill_from_url(url: str, target_root: str, remote_path: str, overwri
     for cap in caps:
         registry.upsert_capability(cap)
     registry.prune_to_scan(caps)
+    installed_cap = next((cap for cap in caps if cap.get("path") == str(target_dir)), {})
+    registry.upsert_skill_update_source(
+        {
+            "skill_name": candidate["name"],
+            "normalized_name": normalized_skill_name(candidate["name"]),
+            "local_path": str(target_dir),
+            "platform": installed_cap.get("platform", ""),
+            "source_type": source.get("source_type", "remote"),
+            "source_url": source.get("source_url", url),
+            "source_ref": source.get("source_ref", ""),
+            "source_path": candidate.get("remote_path", remote_path),
+            "remote_name": candidate["name"],
+            "remote_version": candidate.get("version", "unknown"),
+            "remote_hash": "",
+            "confidence": "high",
+            "discovered_by": "install",
+            "message": "Source mapping saved during install.",
+        },
+        commit=False,
+    )
     registry.log_operation("install", str(target_dir), {"url": url, "source": source, "skill": candidate, "backup": backup}, commit=False)
     registry.conn.commit()
     usage_import = import_usage_from_logs(registry)
@@ -3293,6 +3470,25 @@ def upsert_remote_snapshot(registry: Registry, snapshot: Dict[str, Any]) -> Dict
             data["message"],
         ),
     )
+    registry.upsert_skill_update_source(
+        {
+            "skill_name": data["skill_name"],
+            "normalized_name": data["normalized_name"],
+            "source_type": data["source_type"],
+            "source_url": data["source_url"],
+            "source_ref": data["source_ref"],
+            "source_path": data["source_path"],
+            "remote_name": data["skill_name"],
+            "remote_version": data["remote_version"],
+            "remote_hash": data["remote_hash"],
+            "confidence": data["confidence"],
+            "discovered_by": data["discovered_by"],
+            "last_checked_at": data["checked_at"],
+            "last_success_at": data["checked_at"],
+            "message": data["message"],
+        },
+        commit=False,
+    )
     registry.conn.commit()
     return data
 
@@ -3318,6 +3514,16 @@ def remote_info_from_snapshot(snapshot: Dict[str, Any]) -> Optional[Dict[str, st
         return None
     info["ref"] = str(snapshot.get("source_ref") or info.get("ref") or "")
     info["path"] = str(snapshot.get("source_path") or info.get("path") or "")
+    return info
+
+
+def remote_info_from_update_source(source: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    source_url = str(source.get("source_url") or "")
+    info = parse_github_url(source_url) or parse_gitlab_url(source_url) or parse_gitee_url(source_url) or parse_gitcode_url(source_url) or parse_skills_sh_url(source_url)
+    if not info:
+        return None
+    info["ref"] = str(source.get("source_ref") or info.get("ref") or "")
+    info["path"] = str(source.get("source_path") or info.get("path") or "")
     return info
 
 
@@ -3349,6 +3555,23 @@ def snapshot_result(
         "checked_at": str(snapshot.get("checked_at") or ""),
         "source_path": str(snapshot.get("source_path") or ""),
         "mirror_url": str(snapshot.get("mirror_url") or ""),
+    }
+
+
+def update_source_as_snapshot(source: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "normalized_name": str(source.get("normalized_name") or ""),
+        "skill_name": str(source.get("remote_name") or source.get("normalized_name") or ""),
+        "source_type": str(source.get("source_type") or "github"),
+        "source_url": str(source.get("source_url") or ""),
+        "source_ref": str(source.get("source_ref") or ""),
+        "source_path": str(source.get("source_path") or ""),
+        "remote_version": str(source.get("remote_version") or "unknown"),
+        "remote_hash": str(source.get("remote_hash") or ""),
+        "checked_at": str(source.get("last_success_at") or source.get("last_checked_at") or ""),
+        "discovered_by": str(source.get("discovered_by") or "mapping"),
+        "confidence": str(source.get("confidence") or ""),
+        "message": str(source.get("message") or "Remote source mapping loaded."),
     }
 
 
@@ -3584,8 +3807,67 @@ def check_group_update(ids: Sequence[str], force_remote: bool = False, remember_
             if remember_terminal:
                 remember_update_result(registry, primary["id"], result, primary["github_hash"] or "")
             return result
-    base = next((row for row in rows if remote_info_for_cap(row)), None)
     remote_errors: List[Dict[str, str]] = []
+    update_sources = registry.skill_update_sources(primary["name"], primary["platform"], primary["path"])
+    if not force_remote:
+        for source in update_sources:
+            checked_at = parse_iso_datetime(str(source.get("last_success_at") or source.get("last_checked_at") or ""))
+            if not checked_at or dt.datetime.now(dt.timezone.utc).astimezone() - checked_at > REMOTE_UPDATE_CACHE_TTL:
+                continue
+            result = snapshot_result(rows, local_versions, max_local, update_source_as_snapshot(source), skipped)
+            result["cache_hit"] = True
+            result["message"] = "Remote source mapping loaded."
+            if remember_terminal:
+                remember_update_result(registry, primary["id"], result, primary["github_hash"] or "")
+            return result
+    for source in update_sources:
+        info = remote_info_from_update_source(source)
+        if not info:
+            registry.record_skill_update_source_failure(source, "Unsupported update source URL.")
+            continue
+        try:
+            snapshot = fetch_remote_snapshot_for_info(primary, info, source.get("discovered_by") or "mapping", registry)
+            registry.upsert_skill_update_source(
+                {
+                    **source,
+                    "skill_name": primary["name"],
+                    "local_path": primary["path"],
+                    "platform": primary["platform"],
+                    "remote_version": snapshot.get("remote_version", "unknown"),
+                    "remote_hash": snapshot.get("remote_hash", ""),
+                    "source_ref": snapshot.get("source_ref", source.get("source_ref", "")),
+                    "source_path": snapshot.get("source_path", source.get("source_path", "")),
+                    "last_checked_at": snapshot.get("checked_at", now_iso()),
+                    "last_success_at": snapshot.get("checked_at", now_iso()),
+                    "message": snapshot.get("message", ""),
+                }
+            )
+            registry.record_update_check(
+                primary["id"],
+                "remote_checked",
+                primary["github_hash"] or "",
+                snapshot.get("remote_hash", ""),
+                remote_cache_payload(
+                    "remote_checked",
+                    "Remote version snapshot refreshed from source mapping.",
+                    repo=snapshot.get("source_url", ""),
+                    branch=snapshot.get("source_ref", ""),
+                    remote_version=snapshot.get("remote_version", "unknown"),
+                    remote_hash=snapshot.get("remote_hash", ""),
+                    remote_path=snapshot.get("source_path", ""),
+                    mirror_url=snapshot.get("mirror_url", ""),
+                ),
+            )
+            result = snapshot_result(rows, local_versions, max_local, snapshot, skipped)
+            result["cache_hit"] = False
+            result["message"] = "Remote version checked from source mapping."
+            if remember_terminal:
+                remember_update_result(registry, primary["id"], result, primary["github_hash"] or "")
+            return result
+        except (urllib.error.HTTPError, urllib.error.URLError, ValueError) as exc:
+            registry.record_skill_update_source_failure(source, str(exc))
+            remote_errors.append(remote_error_summary(str(source.get("source_type") or "mapping"), exc))
+    base = next((row for row in rows if remote_info_for_cap(row)), None)
     if base:
         info = remote_info_for_cap(base)
         assert info is not None
@@ -3767,6 +4049,11 @@ def apply_group_update(ids: Sequence[str], mode: str) -> Dict[str, Any]:
         base = next((row for row in rows if remote_info_for_cap(row)), None) or rows[0]
         snapshot = get_remote_snapshot(registry, base["name"], fresh_only=False)
         info = remote_info_from_snapshot(snapshot) if snapshot else None
+        source_mapping = None
+        if not info:
+            sources = registry.skill_update_sources(base["name"], base["platform"], base["path"])
+            source_mapping = sources[0] if sources else None
+            info = remote_info_from_update_source(source_mapping) if source_mapping else None
         if not info:
             info = remote_info_for_cap(base)
         if not info:
@@ -3789,7 +4076,7 @@ def apply_group_update(ids: Sequence[str], mode: str) -> Dict[str, Any]:
         with tempfile.TemporaryDirectory(prefix="asm-update-") as tmp:
             repo_root = download_remote_archive(info, branch, Path(tmp))
             branch = info.get("resolved_ref") or branch
-            snapshot_path = (snapshot or {}).get("source_path") or ""
+            snapshot_path = (snapshot or {}).get("source_path") or (source_mapping or {}).get("source_path") or ""
             remote_dir = repo_root / snapshot_path if snapshot_path else find_remote_skill_dir(repo_root, base["name"], Path(base["path"]).name, info.get("skill", ""))
             if not remote_dir:
                 raise ValueError("Repository found, but no matching remote skill directory was found.")
