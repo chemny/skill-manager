@@ -61,11 +61,12 @@ GITCODE_GH_MIRROR_BASE = "https://gitcode.com/gh_mirrors"
 DEFAULT_UPDATE_CHANNELS: List[Dict[str, Any]] = [
     {"name": "github", "label": "GitHub", "kind": "canonical", "base_url": "https://api.github.com", "priority": 80, "builtin": True},
     {"name": "gitcode", "label": "GitCode", "kind": "mirror", "base_url": GITCODE_GH_MIRROR_BASE, "priority": 70, "builtin": True},
+    {"name": "gitee", "label": "Gitee", "kind": "repository", "base_url": "https://gitee.com", "priority": 65, "builtin": True},
+    {"name": "gitlab", "label": "GitLab", "kind": "repository", "base_url": "https://gitlab.com", "priority": 55, "builtin": True},
     {"name": "skillsmp", "label": "SkillsMP", "kind": "discovery", "base_url": "https://skillsmp.com", "priority": 50, "builtin": True},
     {"name": "find-skills", "label": "find-skills", "kind": "discovery", "base_url": "npx skills find", "priority": 45, "builtin": True},
     {"name": "local", "label": "Local Versions", "kind": "local", "base_url": "local", "priority": 30, "builtin": True},
 ]
-LEGACY_OPTIONAL_CHANNELS = {"gitee", "gitlab"}
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "version": 1,
@@ -773,13 +774,6 @@ class Registry:
             total = int(stats["total"] or 0)
             successes = int(stats["successes"] or 0)
             failures = int(stats["failures"] or 0)
-            dependent = self.conn.execute(
-                "select count(*) n from capabilities where source_type=?",
-                (row["name"],),
-            ).fetchone()
-            dependent_count = int(dependent["n"] or 0) if dependent else 0
-            if row["name"] in LEGACY_OPTIONAL_CHANNELS and total == 0 and dependent_count == 0:
-                continue
             success_rate = round(successes / total, 4) if total else 0.0
             score = int(row["priority"] or 0) + round(success_rate * 100) + min(successes, 25) * 2 - min(failures, 20)
             items.append(
@@ -797,7 +791,6 @@ class Registry:
                     "updates": int(stats["updates"] or 0),
                     "successes": successes,
                     "failures": failures,
-                    "dependent_count": dependent_count,
                     "total": total,
                     "success_rate": success_rate,
                     "score": score,
@@ -5185,12 +5178,12 @@ ADMIN_HTML = r"""<!doctype html>
         smartFloatDone: 'Scan complete',
         smartFloatError: 'Scan failed',
         smartFloatCanceled: 'Scan stopped',
-        smartProgressScope: 'Scan scope',
+        smartProgressScope: 'Check scope',
         smartProgressDone: 'Completed',
         smartProgressRemaining: 'Remaining',
         smartProgressStage: 'Current stage',
         smartProgressUnknown: 'Preparing',
-        smartProgressScopeValue: (skills, copies) => `${skills} skills · ${copies} copies`,
+        smartProgressScopeValue: skills => `This check covers ${skills} skills`,
         smartDetecting: 'Checking all skills',
         smartStepScan: 'Scanning local skills',
         smartStepUsage: 'Refreshing usage records',
@@ -5417,12 +5410,12 @@ ADMIN_HTML = r"""<!doctype html>
         smartFloatDone: '扫描完成',
         smartFloatError: '扫描异常',
         smartFloatCanceled: '已停止',
-        smartProgressScope: '扫描范围',
+        smartProgressScope: '检测范围',
         smartProgressDone: '已完成',
         smartProgressRemaining: '剩余',
         smartProgressStage: '当前阶段',
         smartProgressUnknown: '准备中',
-        smartProgressScopeValue: (skills, copies) => `${skills} 个 skills · ${copies} 个副本`,
+        smartProgressScopeValue: skills => `本次共检测 ${skills} 个 skills`,
         smartDetecting: '正在检测所有 skills',
         smartStepScan: '扫描本地 skills',
         smartStepUsage: '刷新使用记录',
@@ -6444,12 +6437,12 @@ ADMIN_HTML = r"""<!doctype html>
         <div class="smart-upgrade-panel">
           ${controls}
           ${progress}
+          <div class="smart-upgrade-hint">${esc(t(statusKey))}${esc(detailText)}${running ? '<span class="loading-dots">...</span>' : ''}</div>
           <div class="smart-upgrade-actions">
             ${running
               ? `<button class="primary" onclick="cancelSmartUpgrade()">${esc(t('smartStop'))}</button>`
               : `<button class="primary" onclick="runSmartUpgrade()">${esc(t('smartRun'))}</button>`}
           </div>
-          <div class="smart-upgrade-hint">${esc(t(statusKey))}${esc(detailText)}${running ? '<span class="loading-dots">...</span>' : ''}</div>
         </div>`;
       updateSmartScopeControls();
     }
@@ -6527,7 +6520,7 @@ ADMIN_HTML = r"""<!doctype html>
           </div>
           <div class="smart-progress-track"><div class="smart-progress-fill" style="width:${pct}%"></div></div>
           <div class="smart-progress-meta">
-            <div><strong>${esc(t('smartProgressScopeValue')(stats.skills, stats.copies))}</strong>${esc(t('smartProgressScope'))}</div>
+            <div><strong>${esc(t('smartProgressScopeValue')(stats.skills))}</strong>${esc(t('smartProgressScope'))}</div>
             <div><strong>${total ? esc(done) : '-'}</strong>${esc(t('smartProgressDone'))}</div>
             <div><strong>${esc(remaining)}</strong>${esc(t('smartProgressRemaining'))}</div>
           </div>
