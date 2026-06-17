@@ -49,6 +49,10 @@ SKILL_MD_PATH_RE = re.compile(r"(?:~|/Users/[^\s\"'`<>]+|/opt/[^\s\"'`<>]+)[^\s\
 REMOTE_UPDATE_CACHE_TTL = dt.timedelta(hours=24)
 SMART_UPGRADE_JOBS: Dict[str, Dict[str, Any]] = {}
 SMART_UPGRADE_LOCK = threading.Lock()
+
+
+class SmartUpgradeCanceled(Exception):
+    pass
 SMART_UPGRADE_SNAPSHOT_KEY = "latest"
 SMART_UPGRADE_SCHEMA_VERSION = 3
 UPDATE_BUTTON_DISABLED_STATUSES = {"updated", "latest", "no_cloud", "remote_error", "unsupported"}
@@ -1737,13 +1741,62 @@ def update_smart_job(job_id: str, **updates: Any) -> None:
             job["finished_at"] = job["updated_at"]
         Registry().save_background_job(job)
 
+
+def smart_job_cancel_requested(job_id: str) -> bool:
+    with SMART_UPGRADE_LOCK:
+        job = SMART_UPGRADE_JOBS.get(job_id)
+        if job and job.get("cancel_requested"):
+            return True
+    persisted = Registry().background_job(job_id) if job_id else None
+    return bool(persisted and persisted.get("cancel_requested"))
+
+
+def cancel_smart_upgrade_job(job_id: str) -> Dict[str, Any]:
+    if not job_id:
+        latest_job = latest_smart_upgrade_job()
+        job_id = str(latest_job.get("id") or "") if latest_job else ""
+    if not job_id:
+        raise ValueError("Smart upgrade job was not found.")
+    with SMART_UPGRADE_LOCK:
+        job = SMART_UPGRADE_JOBS.get(job_id)
+        if job:
+            if job.get("status") == "running":
+                job["cancel_requested"] = True
+                job["status"] = "canceled"
+                job["stage"] = "canceled"
+                job["current"] = ""
+                job["updated_at"] = now_iso()
+                job["finished_at"] = job["updated_at"]
+                Registry().save_background_job(job)
+                return dict(job)
+            return dict(job)
+    persisted = Registry().background_job(job_id)
+    if not persisted:
+        raise ValueError("Smart upgrade job was not found.")
+    if persisted.get("status") == "running":
+        persisted["cancel_requested"] = True
+        persisted["status"] = "canceled"
+        persisted["stage"] = "canceled"
+        persisted["current"] = ""
+        persisted["updated_at"] = now_iso()
+        persisted["finished_at"] = persisted["updated_at"]
+        Registry().save_background_job(persisted)
+    return persisted
+
+
 def run_smart_upgrade_job(job_id: str, scope: Optional[Dict[str, Any]] = None) -> None:
     def progress(stage: str, current: str, index: int, total: int) -> None:
+        if smart_job_cancel_requested(job_id):
+            raise SmartUpgradeCanceled()
         update_smart_job(job_id, status="running", stage=stage, current=current, index=index, total=total)
 
     try:
         result = smart_upgrade_check(progress, use_cache=False, scope=scope, job_id=job_id)
+        if smart_job_cancel_requested(job_id):
+            raise SmartUpgradeCanceled()
         update_smart_job(job_id, status="done", stage="done", current="", result=result)
+    except SmartUpgradeCanceled:
+        update_smart_job(job_id, status="canceled", stage="canceled", current="", error="")
     except Exception as exc:
         Registry().log_operation("smart-upgrade-error", job_id, {"error": str(exc)})
         update_smart_job(job_id, status="error", stage="error", current="", error=str(exc))
@@ -4152,6 +4205,9 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
                     job_id = latest_job["id"]
                 json_response(self, {"ok": True, **smart_upgrade_job_status(job_id)})
                 return
+            if self.path == "/api/smart-upgrade-cancel":
+                json_response(self, {"ok": True, **cancel_smart_upgrade_job(payload.get("job_id", ""))})
+                return
             if self.path == "/api/logs":
                 rows = [row_to_dict(row) for row in Registry().operation_logs()]
                 json_response(self, {"ok": True, "logs": rows})
@@ -4772,6 +4828,66 @@ ADMIN_HTML = r"""<!doctype html>
       font-size: 13px;
       line-height: 1.55;
     }
+    .smart-upgrade-actions {
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    .smart-job-float {
+      position: fixed;
+      right: 22px;
+      bottom: 22px;
+      z-index: 60;
+      min-width: 132px;
+      border: 1px solid rgba(15,118,110,.35);
+      border-radius: 999px;
+      background: var(--accent);
+      color: white;
+      box-shadow: 0 14px 34px rgba(23,32,27,.24);
+      padding: 10px 14px;
+      display: none;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+      font-weight: 800;
+    }
+    .smart-job-float.show { display: flex; }
+    .smart-job-float.done {
+      background: #f8f3e8;
+      color: var(--ink);
+      border-color: var(--line);
+    }
+    .smart-job-float.error {
+      background: #fff1f0;
+      color: #991b1b;
+      border-color: #efb8b2;
+    }
+    .smart-job-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: currentColor;
+      opacity: .92;
+      animation: pulseDot 1.2s ease-in-out infinite;
+    }
+    .smart-job-float.done .smart-job-dot { animation: none; }
+    .smart-job-main {
+      display: block;
+      font-size: 13px;
+      line-height: 1.1;
+    }
+    .smart-job-sub {
+      display: block;
+      font-size: 11px;
+      opacity: .78;
+      margin-top: 2px;
+      font-weight: 600;
+    }
+    @keyframes pulseDot {
+      0%, 100% { transform: scale(.8); opacity: .55; }
+      50% { transform: scale(1.15); opacity: 1; }
+    }
     .empty {
       border: 1px dashed var(--line);
       border-radius: 8px;
@@ -4896,12 +5012,22 @@ ADMIN_HTML = r"""<!doctype html>
     </div>
   </div>
   <div id="toast"></div>
+  <button id="smartJobFloat" class="smart-job-float" onclick="showRecommendations()" type="button">
+    <span class="smart-job-dot"></span>
+    <span>
+      <span class="smart-job-main" id="smartJobFloatTitle">Scanning</span>
+      <span class="smart-job-sub" id="smartJobFloatSub"></span>
+    </span>
+  </button>
   <script>
     let state = {capabilities: [], smart_upgrade: null};
     let lang = localStorage.getItem('asm.lang') || 'en';
     let sortState = { key: 'usage', direction: 'desc' };
     let metricFilter = '';
     let loadingTimer = null;
+    let smartPollTimer = null;
+    let smartActiveJobId = '';
+    let smartPanelVisible = false;
     let visibleGroups = [];
     let visibleLimit = 80;
     const LIST_BATCH_SIZE = 80;
@@ -4978,6 +5104,14 @@ ADMIN_HTML = r"""<!doctype html>
         smartScopeResult: 'Scan scope',
         smartInterrupted: 'Scan interrupted',
         smartNewScan: 'Start another scan',
+        smartStop: 'Stop scan',
+        smartStopping: 'Stopping scan',
+        smartCanceled: 'Scan stopped',
+        smartFloatRunning: 'Scanning',
+        smartFloatDone: 'Scan complete',
+        smartFloatError: 'Scan failed',
+        smartFloatCanceled: 'Scan stopped',
+        smartFloatUpdating: 'Updating',
         smartDetecting: 'Checking all skills',
         smartStepScan: 'Scanning local skills',
         smartStepUsage: 'Refreshing usage records',
@@ -5197,6 +5331,14 @@ ADMIN_HTML = r"""<!doctype html>
         smartScopeResult: '扫描范围',
         smartInterrupted: '检测中断',
         smartNewScan: '重新选择扫描',
+        smartStop: '停止扫描',
+        smartStopping: '正在停止扫描',
+        smartCanceled: '扫描已停止',
+        smartFloatRunning: '扫描中',
+        smartFloatDone: '扫描完成',
+        smartFloatError: '扫描异常',
+        smartFloatCanceled: '已停止',
+        smartFloatUpdating: '更新中',
         smartDetecting: '正在检测所有 skills',
         smartStepScan: '扫描本地 skills',
         smartStepUsage: '刷新使用记录',
@@ -5400,6 +5542,8 @@ ADMIN_HTML = r"""<!doctype html>
       applyI18n();
       fillFilters();
       render();
+      if (state.smart_job && state.smart_job.status === 'running') ensureSmartPolling(state.smart_job.id);
+      updateSmartJobFloat(state.smart_job);
     }
     function applyI18n() {
       document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
@@ -6174,15 +6318,23 @@ ADMIN_HTML = r"""<!doctype html>
     function showRecommendations() {
       closeMoreMenus();
       $('detailTitle').textContent = t('recommendations');
+      smartPanelVisible = true;
       const job = state.smart_job || null;
       if (job && job.status === 'running') {
-        pollSmartUpgrade(job.id);
+        smartActiveJobId = job.id || smartActiveJobId;
+        renderSmartUpgradeJob(job);
+        ensureSmartPolling(job.id);
       } else if (job && job.status === 'done' && job.result) {
         renderSmartUpgradeResult(job.result);
+      } else if (job && job.status === 'error') {
+        renderSmartUpgradeStart(false, 'smartInterrupted', job.error || '');
+      } else if (job && job.status === 'canceled') {
+        renderSmartUpgradeStart(false, 'smartCanceled');
       } else {
         renderSmartUpgradeStart(false, 'smartHint');
       }
       $('detailModal').classList.add('open');
+      updateSmartJobFloat(job);
     }
     function renderSmartUpgradeStart(running, statusKey, detail = '') {
       const detailText = detail ? `：${detail}` : '';
@@ -6206,7 +6358,10 @@ ADMIN_HTML = r"""<!doctype html>
       $('detailBody').innerHTML = `
         <div class="smart-upgrade-panel">
           ${controls}
-          <button class="primary" onclick="runSmartUpgrade()" ${running ? 'disabled' : ''}>${esc(running ? t('smartRunning') : t('smartRun'))}</button>
+          <div class="smart-upgrade-actions">
+            <button class="primary" onclick="runSmartUpgrade()" ${running ? 'disabled' : ''}>${esc(running ? t('smartRunning') : t('smartRun'))}</button>
+            ${running ? `<button onclick="cancelSmartUpgrade()">${esc(t('smartStop'))}</button>` : ''}
+          </div>
           <div class="smart-upgrade-hint">${esc(t(statusKey))}${esc(detailText)}${running ? '<span class="loading-dots">...</span>' : ''}</div>
         </div>`;
       updateSmartScopeControls();
@@ -6244,7 +6399,9 @@ ADMIN_HTML = r"""<!doctype html>
         health: 'smartStepHealth',
         metadata: 'smartStepMetadata',
         duplicates: 'smartStepDuplicates',
-        done: 'smartStepDone'
+        done: 'smartStepDone',
+        canceled: 'smartCanceled',
+        error: 'smartInterrupted'
       };
       return map[stage] || 'smartDetecting';
     }
@@ -6276,41 +6433,107 @@ ADMIN_HTML = r"""<!doctype html>
         const scope = selectedSmartScope();
         renderSmartUpgradeStart(true, 'smartStepScan');
         const start = await api('/api/smart-upgrade-start', {scope});
-        await pollSmartUpgrade(start.job_id);
+        smartActiveJobId = start.job_id;
+        await pollSmartUpgrade(start.job_id, true);
+        ensureSmartPolling(start.job_id);
       } catch(e) {
         stopLoadingDots();
         toast(e.message);
       }
     }
-    async function pollSmartUpgrade(jobId) {
+    function ensureSmartPolling(jobId) {
+      if (!jobId) return;
+      smartActiveJobId = jobId;
+      if (smartPollTimer) clearInterval(smartPollTimer);
+      smartPollTimer = setInterval(() => pollSmartUpgrade(jobId, false), 1000);
+    }
+    function stopSmartPolling() {
+      if (smartPollTimer) {
+        clearInterval(smartPollTimer);
+        smartPollTimer = null;
+      }
+    }
+    function isSmartPanelOpen() {
+      return smartPanelVisible && $('detailModal').classList.contains('open') && $('detailTitle').textContent === t('recommendations');
+    }
+    async function pollSmartUpgrade(jobId, renderNow = false) {
       try {
-        let data = null;
-        while (true) {
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          const job = await api('/api/smart-upgrade-status', {job_id: jobId});
-          state.smart_job = job;
-          if (job.status === 'error') {
-            renderSmartUpgradeStart(false, 'smartInterrupted', job.error || '');
-            return;
-          }
-          renderSmartUpgradeStart(true, smartStageKey(job.stage), smartProgressDetail(job));
-          if (job.status === 'done') {
-            data = job.result || {};
-            break;
-          }
+        const job = await api('/api/smart-upgrade-status', {job_id: jobId});
+        state.smart_job = job;
+        updateSmartJobFloat(job);
+        if (job.status === 'running') {
+          if (renderNow || isSmartPanelOpen()) renderSmartUpgradeJob(job);
+          return;
         }
-        const res = await fetch('/api/state');
-        const freshState = await res.json();
-        state = freshState;
-        applyI18n();
-        fillFilters();
-        render();
+        stopSmartPolling();
         stopLoadingDots();
-        renderSmartUpgradeResult(data);
+        if (job.status === 'done') {
+          const res = await fetch('/api/state');
+          const freshState = await res.json();
+          state = freshState;
+          applyI18n();
+          fillFilters();
+          render();
+          updateSmartJobFloat(state.smart_job || job);
+          if (isSmartPanelOpen()) renderSmartUpgradeResult(job.result || {});
+          return;
+        }
+        if (job.status === 'canceled') {
+          if (isSmartPanelOpen()) renderSmartUpgradeStart(false, 'smartCanceled');
+          return;
+        }
+        if (job.status === 'error') {
+          if (isSmartPanelOpen()) renderSmartUpgradeStart(false, 'smartInterrupted', job.error || '');
+        }
       } catch(e) {
         stopLoadingDots();
         toast(e.message);
       }
+    }
+    function renderSmartUpgradeJob(job) {
+      renderSmartUpgradeStart(true, smartStageKey(job.stage), smartProgressDetail(job));
+    }
+    async function cancelSmartUpgrade() {
+      const jobId = smartActiveJobId || (state.smart_job || {}).id || '';
+      if (!jobId) return;
+      try {
+        renderSmartUpgradeStart(true, 'smartStopping');
+        const job = await api('/api/smart-upgrade-cancel', {job_id: jobId});
+        state.smart_job = job;
+        updateSmartJobFloat(job);
+        ensureSmartPolling(jobId);
+      } catch(e) {
+        toast(e.message);
+      }
+    }
+    function updateSmartJobFloat(job) {
+      const el = $('smartJobFloat');
+      if (!el) return;
+      const current = job || state.smart_job || null;
+      if (!current || !current.status || isSmartPanelOpen()) {
+        el.classList.remove('show', 'done', 'error');
+        return;
+      }
+      const status = current.status;
+      if (!['running', 'done', 'error', 'canceled'].includes(status)) {
+        el.classList.remove('show', 'done', 'error');
+        return;
+      }
+      el.classList.toggle('done', status === 'done' || status === 'canceled');
+      el.classList.toggle('error', status === 'error');
+      const titleKey = status === 'running'
+        ? (current.stage === 'update' ? 'smartFloatUpdating' : 'smartFloatRunning')
+        : status === 'done'
+          ? 'smartFloatDone'
+          : status === 'canceled'
+            ? 'smartFloatCanceled'
+            : 'smartFloatError';
+      $('smartJobFloatTitle').textContent = t(titleKey);
+      $('smartJobFloatSub').textContent = smartProgressDetail(current) || smartStageLabel(current.stage);
+      el.classList.add('show');
+    }
+    function smartStageLabel(stage) {
+      return t(smartStageKey(stage));
     }
     function renderSmartUpgradeResult(data) {
       const items = data.recommendations || [];
@@ -6605,7 +6828,12 @@ ADMIN_HTML = r"""<!doctype html>
       $('detailModal').classList.add('open');
     }
     function closeDetails() {
+      const smartOpen = isSmartPanelOpen();
       $('detailModal').classList.remove('open');
+      if (smartOpen) {
+        smartPanelVisible = false;
+        updateSmartJobFloat(state.smart_job);
+      }
     }
     async function openUpdate(groupKey, forceRemote = false) {
       const group = groupByKey(groupKey);
