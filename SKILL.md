@@ -153,6 +153,7 @@ The HTML admin provides a reviewed update flow:
 - Check bound repository metadata first, including GitHub, GitLab, Gitee, GitCode, and skills.sh URLs found in `github_url`, `homepage`, or `repository`.
 - If GitHub is unavailable, try validated GitCode GitHub mirror candidates before falling through to discovery sources.
 - If no bound source is usable, search SkillsMP, then `find-skills` / skills.sh.
+- Update channels record search/check/download/update success and failure counts; enabled discovery channels with higher scores are tried first.
 - If a newer remote version is found, confirm before backing up and replacing every selected local copy.
 - If no newer remote version is found but local copies have different versions, offer to unify all local copies to the highest local version.
 - Builtin/plugin cache capabilities are not updated or deleted from the UI.
@@ -201,6 +202,7 @@ The dashboard supports:
 - usage visibility
 - usage event viewer
 - source management
+- update channel management
 - install skills from GitHub, GitLab, Gitee, GitCode, skills.sh, or zip links
 - background Smart Scan checks with full, platform, or grade scopes
 - real activate by moving files back from `.disabled`

@@ -117,6 +117,7 @@ powershell -ExecutionPolicy Bypass -File ".\scripts\skill-manager.ps1" -Action W
 - 只按名称搜索；
 - 查看详情和使用记录；
 - 管理自定义来源目录；
+- 管理更新渠道，查看各渠道搜索、检查、下载、更新、成功率和失败情况；
 - 从 GitHub、GitLab、Gitee、GitCode、skills.sh 或 zip 链接安装 skill；
 - 带 24 小时缓存的智能扫描，可按全量、平台或等级范围运行；
 - 本地版本统一；
@@ -136,6 +137,8 @@ powershell -ExecutionPolicy Bypass -File ".\scripts\skill-manager.ps1" -Action W
 6. 远程都找不到时，最后比较本地同名副本，提示是否统一到本地最高版本。
 
 某个远程来源失败不会直接说明 skill 有问题。比如 GitHub 限流、SkillsMP 超时，都会继续尝试下一条来源。GitCode 镜像只作为 GitHub 的下载加速 fallback，原始来源仍记录为 GitHub。
+
+“更多 -> 更新渠道管理”会记录每个渠道的搜索、检查、下载、更新、成功和失败次数。渠道会按启用状态、手动优先级、成功率和成功次数综合评分；同类搜索渠道会优先使用评分更高的渠道。新增 `mirror` 类型渠道时，可以在地址中使用 `{owner}`、`{repo}`、`{prefix2}`、`{prefix3}` 模板，用作 GitHub 镜像 fallback。
 
 启动后台：
 

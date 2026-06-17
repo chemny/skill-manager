@@ -27,6 +27,7 @@ import sys
 import tempfile
 import textwrap
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -52,6 +53,16 @@ SMART_UPGRADE_SNAPSHOT_KEY = "latest"
 SMART_UPGRADE_SCHEMA_VERSION = 3
 UPDATE_BUTTON_DISABLED_STATUSES = {"updated", "latest", "no_cloud", "remote_error", "unsupported"}
 GITCODE_GH_MIRROR_BASE = "https://gitcode.com/gh_mirrors"
+
+DEFAULT_UPDATE_CHANNELS: List[Dict[str, Any]] = [
+    {"name": "github", "label": "GitHub", "kind": "canonical", "base_url": "https://api.github.com", "priority": 80, "builtin": True},
+    {"name": "gitcode", "label": "GitCode", "kind": "mirror", "base_url": GITCODE_GH_MIRROR_BASE, "priority": 70, "builtin": True},
+    {"name": "gitee", "label": "Gitee", "kind": "repository", "base_url": "https://gitee.com", "priority": 65, "builtin": True},
+    {"name": "gitlab", "label": "GitLab", "kind": "repository", "base_url": "https://gitlab.com", "priority": 55, "builtin": True},
+    {"name": "skillsmp", "label": "SkillsMP", "kind": "discovery", "base_url": "https://skillsmp.com", "priority": 50, "builtin": True},
+    {"name": "find-skills", "label": "find-skills", "kind": "discovery", "base_url": "npx skills find", "priority": 45, "builtin": True},
+    {"name": "local", "label": "Local Versions", "kind": "local", "base_url": "local", "priority": 30, "builtin": True},
+]
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "version": 1,
@@ -411,6 +422,28 @@ class Registry:
               confidence text,
               message text
             );
+            create table if not exists update_channels (
+              name text primary key,
+              label text not null,
+              kind text not null,
+              base_url text,
+              enabled integer default 1,
+              priority integer default 50,
+              builtin integer default 0,
+              deleted integer default 0,
+              created_at text not null,
+              updated_at text not null
+            );
+            create table if not exists update_channel_events (
+              id integer primary key autoincrement,
+              channel_name text not null,
+              occurred_at text not null,
+              action text not null,
+              outcome text not null,
+              skill_name text,
+              message text,
+              duration_ms integer default 0
+            );
             create table if not exists smart_upgrade_snapshots (
               snapshot_key text primary key,
               checked_at text not null,
@@ -468,6 +501,32 @@ class Registry:
             );
             """
         )
+        self.conn.commit()
+        self.ensure_default_update_channels()
+
+    def ensure_default_update_channels(self) -> None:
+        stamp = now_iso()
+        for channel in DEFAULT_UPDATE_CHANNELS:
+            existing = self.conn.execute("select name from update_channels where name=?", (channel["name"],)).fetchone()
+            if existing:
+                continue
+            self.conn.execute(
+                """
+                insert into update_channels (name, label, kind, base_url, enabled, priority, builtin, deleted, created_at, updated_at)
+                values (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                """,
+                (
+                    channel["name"],
+                    channel["label"],
+                    channel["kind"],
+                    channel["base_url"],
+                    1,
+                    int(channel["priority"]),
+                    1 if channel.get("builtin") else 0,
+                    stamp,
+                    stamp,
+                ),
+            )
         self.conn.commit()
 
     def upsert_capability(self, cap: Dict[str, Any]) -> None:
@@ -676,6 +735,131 @@ class Registry:
         result["snapshot_checked_at"] = row["checked_at"]
         result["snapshot_cache_hit"] = True
         return result
+
+    def update_channels(self) -> List[Dict[str, Any]]:
+        rows = self.conn.execute("select * from update_channels where deleted=0 order by priority desc, name").fetchall()
+        items: List[Dict[str, Any]] = []
+        for row in rows:
+            stats = self.conn.execute(
+                """
+                select
+                  count(*) total,
+                  sum(case when action='search' then 1 else 0 end) searches,
+                  sum(case when action='check' then 1 else 0 end) checks,
+                  sum(case when action='download' then 1 else 0 end) downloads,
+                  sum(case when action='update' then 1 else 0 end) updates,
+                  sum(case when outcome='success' then 1 else 0 end) successes,
+                  sum(case when outcome='failure' then 1 else 0 end) failures,
+                  max(occurred_at) last_used_at,
+                  max(case when outcome='success' then occurred_at else '' end) last_success_at
+                from update_channel_events
+                where channel_name=?
+                """,
+                (row["name"],),
+            ).fetchone()
+            last_error = self.conn.execute(
+                """
+                select message
+                from update_channel_events
+                where channel_name=? and outcome='failure'
+                order by occurred_at desc, id desc
+                limit 1
+                """,
+                (row["name"],),
+            ).fetchone()
+            total = int(stats["total"] or 0)
+            successes = int(stats["successes"] or 0)
+            failures = int(stats["failures"] or 0)
+            success_rate = round(successes / total, 4) if total else 0.0
+            score = int(row["priority"] or 0) + round(success_rate * 100) + min(successes, 25) * 2 - min(failures, 20)
+            items.append(
+                {
+                    "name": row["name"],
+                    "label": row["label"],
+                    "kind": row["kind"],
+                    "base_url": row["base_url"] or "",
+                    "enabled": bool(row["enabled"]),
+                    "priority": int(row["priority"] or 0),
+                    "builtin": bool(row["builtin"]),
+                    "searches": int(stats["searches"] or 0),
+                    "checks": int(stats["checks"] or 0),
+                    "downloads": int(stats["downloads"] or 0),
+                    "updates": int(stats["updates"] or 0),
+                    "successes": successes,
+                    "failures": failures,
+                    "total": total,
+                    "success_rate": success_rate,
+                    "score": score,
+                    "last_used_at": stats["last_used_at"] or "",
+                    "last_success_at": stats["last_success_at"] or "",
+                    "last_error": last_error["message"] if last_error else "",
+                }
+            )
+        return sorted(items, key=lambda item: (not item["enabled"], -int(item["score"]), item["name"]))
+
+    def channel_enabled(self, name: str) -> bool:
+        row = self.conn.execute("select enabled, deleted from update_channels where name=?", (name,)).fetchone()
+        return bool(row and row["enabled"] and not row["deleted"])
+
+    def channel_score(self, name: str) -> int:
+        for channel in self.update_channels():
+            if channel["name"] == name:
+                return int(channel["score"])
+        return 0
+
+    def update_channel(self, action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        name = re.sub(r"[^a-z0-9_.-]+", "-", str(payload.get("name") or "").lower()).strip("-")
+        stamp = now_iso()
+        if action == "add":
+            if not name:
+                raise ValueError("Channel name is required.")
+            label = str(payload.get("label") or name)
+            kind = str(payload.get("kind") or "custom")
+            base_url = str(payload.get("base_url") or "")
+            priority = int(payload.get("priority") or 40)
+            self.conn.execute(
+                """
+                insert into update_channels (name, label, kind, base_url, enabled, priority, builtin, deleted, created_at, updated_at)
+                values (?, ?, ?, ?, 1, ?, 0, 0, ?, ?)
+                on conflict(name) do update set
+                  label=excluded.label,
+                  kind=excluded.kind,
+                  base_url=excluded.base_url,
+                  enabled=1,
+                  priority=excluded.priority,
+                  deleted=0,
+                  updated_at=excluded.updated_at
+                """,
+                (name, label, kind, base_url, priority, stamp, stamp),
+            )
+        elif action == "toggle":
+            enabled = 1 if payload.get("enabled") else 0
+            self.conn.execute("update update_channels set enabled=?, updated_at=? where name=?", (enabled, stamp, name))
+        elif action == "delete":
+            self.conn.execute("update update_channels set enabled=0, deleted=1, updated_at=? where name=?", (stamp, name))
+        else:
+            raise ValueError(f"Unsupported channel action: {action}")
+        self.log_operation("update-channel", name, {"action": action}, commit=False)
+        self.conn.commit()
+        return {"channels": self.update_channels()}
+
+    def record_update_channel_event(
+        self,
+        channel_name: str,
+        action: str,
+        outcome: str,
+        skill_name: str = "",
+        message: str = "",
+        duration_ms: int = 0,
+    ) -> None:
+        self.conn.execute(
+            """
+            insert into update_channel_events (channel_name, occurred_at, action, outcome, skill_name, message, duration_ms)
+            values (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (channel_name, now_iso(), action, outcome, skill_name, short(message, 500), int(duration_ms or 0)),
+        )
+        self.conn.commit()
 
     def save_background_job(self, job: Dict[str, Any]) -> None:
         self.conn.execute(
@@ -2270,48 +2454,93 @@ def gitcode_mirror_candidates(info: Dict[str, str]) -> List[Dict[str, str]]:
         if value and value not in prefixes:
             prefixes.append(value)
     candidates: List[Dict[str, str]] = []
-    for prefix in prefixes:
-        candidates.append(
-            {
-                "provider": "gitcode_mirror",
-                "mirror_provider": "GitCode",
-                "mirror_url": f"{GITCODE_GH_MIRROR_BASE}/{prefix}/{repo_key}.git",
-                "owner": owner,
-                "repo": repo,
-                "ref": str(info.get("ref") or ""),
-                "path": str(info.get("path") or ""),
-                "skill": str(info.get("skill") or ""),
-            }
-        )
+    channels = [
+        channel for channel in Registry().update_channels()
+        if channel.get("enabled") and channel.get("kind") in ("mirror", "github-mirror")
+    ]
+    for channel in channels:
+        base_url = str(channel.get("base_url") or "").rstrip("/")
+        if not base_url:
+            continue
+        if channel.get("name") == "gitcode":
+            mirror_urls = [f"{base_url}/{prefix}/{repo_key}.git" for prefix in prefixes]
+        elif "{" in base_url:
+            mirror_urls = [
+                base_url.format(
+                    owner=owner,
+                    repo=repo,
+                    owner_key=owner_key,
+                    repo_key=repo_key,
+                    prefix2=repo_key[:2],
+                    prefix3=repo_key[:3],
+                )
+            ]
+        else:
+            mirror_urls = [f"{base_url}/{owner_key}/{repo_key}.git"]
+        for mirror_url in mirror_urls:
+            candidates.append(
+                {
+                    "provider": "gitcode_mirror",
+                    "channel_name": str(channel.get("name") or "mirror"),
+                    "mirror_provider": str(channel.get("label") or channel.get("name") or "Mirror"),
+                    "mirror_url": mirror_url,
+                    "owner": owner,
+                    "repo": repo,
+                    "ref": str(info.get("ref") or ""),
+                    "path": str(info.get("path") or ""),
+                    "skill": str(info.get("skill") or ""),
+                }
+            )
     return candidates
 
 
 def download_github_or_mirror_archive(info: Dict[str, str], branch: str, tmpdir: Path) -> Path:
     primary_error: Optional[BaseException] = None
-    if branch:
-        try:
-            return download_github_archive(info, branch, tmpdir)
-        except (urllib.error.HTTPError, urllib.error.URLError, ValueError) as exc:
-            primary_error = exc
-    else:
-        try:
-            repo_api = f"https://api.github.com/repos/{info['owner']}/{info['repo']}"
-            branch = github_json(repo_api)["default_branch"]
-            return download_github_archive(info, branch, tmpdir)
-        except (urllib.error.HTTPError, urllib.error.URLError, ValueError) as exc:
-            primary_error = exc
+    skill_name = str(info.get("skill") or info.get("repo") or "")
+    if channel_enabled("github"):
+        if branch:
+            started = time.time()
+            try:
+                root = download_github_archive(info, branch, tmpdir)
+                record_channel_event("github", "download", "success", skill_name, f"{info['owner']}/{info['repo']}@{branch}", started)
+                return root
+            except (urllib.error.HTTPError, urllib.error.URLError, ValueError) as exc:
+                primary_error = exc
+                record_channel_event("github", "download", "failure", skill_name, str(exc), started)
+        else:
+            try:
+                repo_api = f"https://api.github.com/repos/{info['owner']}/{info['repo']}"
+                started = time.time()
+                branch = github_json(repo_api)["default_branch"]
+                record_channel_event("github", "check", "success", skill_name, f"default branch: {branch}", started)
+                started = time.time()
+                root = download_github_archive(info, branch, tmpdir)
+                record_channel_event("github", "download", "success", skill_name, f"{info['owner']}/{info['repo']}@{branch}", started)
+                return root
+            except (urllib.error.HTTPError, urllib.error.URLError, ValueError) as exc:
+                primary_error = exc
+                record_channel_event("github", "download", "failure", skill_name, str(exc), started if "started" in locals() else None)
     mirror_errors: List[str] = []
-    for index, mirror in enumerate(gitcode_mirror_candidates(info), start=1):
+    mirrors = gitcode_mirror_candidates(info)
+    if not mirrors:
+        if primary_error:
+            raise primary_error
+        raise ValueError("No enabled mirror update channel is available.")
+    for index, mirror in enumerate(mirrors, start=1):
         attempt_dir = tmpdir / f"gitcode-mirror-{index}"
         attempt_dir.mkdir(parents=True, exist_ok=True)
+        started = time.time()
         try:
             repo_root = download_git_repository(mirror, branch, attempt_dir)
             info["mirror_provider"] = mirror["mirror_provider"]
             info["mirror_url"] = mirror["mirror_url"]
+            info["mirror_channel_name"] = str(mirror.get("channel_name") or "mirror")
             info["resolved_ref"] = mirror.get("resolved_ref") or branch
+            record_channel_event(str(mirror.get("channel_name") or "mirror"), "download", "success", skill_name, mirror["mirror_url"], started)
             return repo_root
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
             mirror_errors.append(f"{mirror['mirror_url']}: {exc}")
+            record_channel_event(str(mirror.get("channel_name") or "mirror"), "download", "failure", skill_name, f"{mirror['mirror_url']}: {exc}", started)
     if primary_error:
         if mirror_errors:
             raise ValueError(f"{primary_error}; GitCode mirror unavailable: {' | '.join(mirror_errors[:3])}")
@@ -2595,6 +2824,24 @@ def is_rate_limit_error(exc: BaseException) -> bool:
     return "rate limit" in text or "quota exceeded" in text or "http error 403" in text or "http error 429" in text
 
 
+def channel_enabled(name: str) -> bool:
+    return Registry().channel_enabled(name)
+
+
+def record_channel_event(channel: str, action: str, outcome: str, skill_name: str = "", message: str = "", started_at: Optional[float] = None) -> None:
+    duration_ms = int((time.time() - started_at) * 1000) if started_at else 0
+    try:
+        Registry().record_update_channel_event(channel, action, outcome, skill_name, message, duration_ms)
+    except Exception:
+        pass
+
+
+def ordered_channels(names: Sequence[str]) -> List[str]:
+    registry = Registry()
+    enabled = [name for name in names if registry.channel_enabled(name)]
+    return sorted(enabled, key=lambda name: registry.channel_score(name), reverse=True)
+
+
 def read_http_text(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 20, retries: int = 2) -> str:
     request_headers = {"User-Agent": APP_NAME, "Accept": "application/json"}
     if headers:
@@ -2628,10 +2875,14 @@ def read_http_text(url: str, headers: Optional[Dict[str, str]] = None, timeout: 
 
 
 def discover_remote_with_skillsmp(skill_name: str) -> Optional[Dict[str, str]]:
+    if not channel_enabled("skillsmp"):
+        return None
     query = urllib.parse.urlencode({"q": skill_name, "limit": "8", "sortBy": "recent"})
+    started = time.time()
     try:
         payload = json.loads(read_http_text(f"https://skillsmp.com/api/v1/skills/search?{query}", retries=2))
-    except Exception:
+    except Exception as exc:
+        record_channel_event("skillsmp", "search", "failure", skill_name, str(exc), started)
         return None
     skills = ((payload.get("data") or {}).get("skills") or []) if isinstance(payload, dict) else []
     candidates: List[Tuple[int, Dict[str, str]]] = []
@@ -2656,11 +2907,16 @@ def discover_remote_with_skillsmp(skill_name: str) -> Optional[Dict[str, str]]:
                 info["skill"] = remote_name
             candidates.append((score, info))
     if not candidates:
+        record_channel_event("skillsmp", "search", "failure", skill_name, "No matching skill found.", started)
         return None
+    record_channel_event("skillsmp", "search", "success", skill_name, "Candidate found.", started)
     return sorted(candidates, key=lambda item: item[0], reverse=True)[0][1]
 
 
 def discover_remote_with_find_skills(skill_name: str) -> Optional[Dict[str, str]]:
+    if not channel_enabled("find-skills"):
+        return None
+    started = time.time()
     try:
         result = subprocess.run(
             ["npx", "--yes", "skills", "find", skill_name],
@@ -2669,7 +2925,8 @@ def discover_remote_with_find_skills(skill_name: str) -> Optional[Dict[str, str]
             timeout=25,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        record_channel_event("find-skills", "search", "failure", skill_name, str(exc), started)
         return None
     output = strip_ansi((result.stdout or "") + "\n" + (result.stderr or ""))
     candidates: List[Tuple[int, Dict[str, str]]] = []
@@ -2685,7 +2942,9 @@ def discover_remote_with_find_skills(skill_name: str) -> Optional[Dict[str, str]
         if score > 0:
             candidates.append((score, {"provider": "github", "owner": owner, "repo": repo, "ref": "", "path": "", "skill": remote_skill}))
     if not candidates:
+        record_channel_event("find-skills", "search", "failure", skill_name, "No matching skill found.", started)
         return None
+    record_channel_event("find-skills", "search", "success", skill_name, "Candidate found.", started)
     return sorted(candidates, key=lambda item: item[0], reverse=True)[0][1]
 
 
@@ -2841,6 +3100,8 @@ def fetch_remote_snapshot_for_info(
     registry: Registry,
 ) -> Dict[str, Any]:
     provider = info.get("provider") or "github"
+    if provider != "github" and not channel_enabled(provider):
+        raise ValueError(f"{provider} update channel is disabled.")
     if provider == "gitlab":
         project = urllib.parse.quote(info["project"], safe="")
         project_api = f"https://gitlab.com/api/v4/projects/{project}"
@@ -2892,6 +3153,7 @@ def fetch_remote_snapshot_for_info(
         )
         if info.get("mirror_url"):
             snapshot["mirror_url"] = str(info.get("mirror_url") or "")
+        record_channel_event(str(info.get("mirror_channel_name") or "gitcode") if info.get("mirror_provider") else provider, "check", "success", row["name"], snapshot.get("message", "Remote version checked."))
         return snapshot
 
 
@@ -3088,16 +3350,24 @@ def check_group_update(ids: Sequence[str], force_remote: bool = False, remember_
             return result
         except (urllib.error.HTTPError, urllib.error.URLError, ValueError) as exc:
             remote_errors.append(remote_error_summary(info.get("provider", "remote"), exc))
+            record_channel_event(info.get("provider", "remote"), "check", "failure", base["name"], str(exc))
 
     found_any_remote_candidate = False
     try:
-        info = discover_remote_with_skillsmp(primary["name"])
-        if info:
+        discovery_steps = {
+            "skillsmp": discover_remote_with_skillsmp,
+            "find-skills": discover_remote_with_find_skills,
+        }
+        for channel in ordered_channels(["skillsmp", "find-skills"]):
+            info = discovery_steps[channel](primary["name"])
+            if not info:
+                continue
             found_any_remote_candidate = True
             try:
-                snapshot = fetch_remote_snapshot_for_info(primary, info, "skillsmp", registry)
+                snapshot = fetch_remote_snapshot_for_info(primary, info, channel, registry)
             except (urllib.error.HTTPError, urllib.error.URLError, ValueError) as exc:
-                remote_errors.append(remote_error_summary("skillsmp", exc))
+                remote_errors.append(remote_error_summary(channel, exc))
+                record_channel_event(channel, "check", "failure", primary["name"], str(exc))
                 snapshot = None
             if snapshot:
                 registry.record_update_check(
@@ -3107,41 +3377,7 @@ def check_group_update(ids: Sequence[str], force_remote: bool = False, remember_
                     snapshot.get("remote_hash", ""),
                     remote_cache_payload(
                         "remote_checked",
-                        "Remote version snapshot refreshed from SkillsMP.",
-                        repo=snapshot.get("source_url", ""),
-                        branch=snapshot.get("source_ref", ""),
-                        remote_version=snapshot.get("remote_version", "unknown"),
-                        remote_hash=snapshot.get("remote_hash", ""),
-                        remote_path=snapshot.get("source_path", ""),
-                        mirror_url=snapshot.get("mirror_url", ""),
-                    ),
-                )
-                result = snapshot_result(rows, local_versions, max_local, snapshot, skipped)
-                result["cache_hit"] = False
-                result["message"] = "Remote version checked."
-                if remote_errors:
-                    result["remote_errors"] = remote_errors
-                if remember_terminal:
-                    remember_update_result(registry, primary["id"], result, primary["github_hash"] or "")
-                return result
-
-        info = discover_remote_with_find_skills(primary["name"])
-        if info:
-            found_any_remote_candidate = True
-            try:
-                snapshot = fetch_remote_snapshot_for_info(primary, info, "find-skills", registry)
-            except (urllib.error.HTTPError, urllib.error.URLError, ValueError) as exc:
-                remote_errors.append(remote_error_summary("find-skills", exc))
-                snapshot = None
-            if snapshot:
-                registry.record_update_check(
-                    primary["id"],
-                    "remote_checked",
-                    primary["github_hash"] or "",
-                    snapshot.get("remote_hash", ""),
-                    remote_cache_payload(
-                        "remote_checked",
-                        "Remote version snapshot refreshed from find-skills.",
+                        f"Remote version snapshot refreshed from {channel}.",
                         repo=snapshot.get("source_url", ""),
                         branch=snapshot.get("source_ref", ""),
                         remote_version=snapshot.get("remote_version", "unknown"),
@@ -3185,6 +3421,7 @@ def check_group_update(ids: Sequence[str], force_remote: bool = False, remember_
                 "remote_errors": remote_errors,
             },
         )
+        record_channel_event("local", "check", "success", primary["name"], result["status"])
         if remember_terminal:
             remember_update_result(registry, primary["id"], result, primary["github_hash"] or "")
         return result
@@ -3205,6 +3442,7 @@ def check_group_update(ids: Sequence[str], force_remote: bool = False, remember_
             message,
             {"cache_hit": False, "checked_at": now_iso(), "skipped_targets": skipped, "remote_errors": remote_errors},
         )
+        record_channel_event("local", "check", "success", primary["name"], result["status"])
         if remember_terminal:
             remember_update_result(registry, (base or primary)["id"], result, (base or primary)["github_hash"] or "")
         return result
@@ -3281,6 +3519,10 @@ def apply_group_update(ids: Sequence[str], mode: str) -> Dict[str, Any]:
 
     refresh_result = refresh_registry(registry)
     registry.log_operation("update", ",".join([row["id"] for row in rows[:8]]), {"mode": mode, "updated": updated, "backups": backups, "skipped": len(skipped)}, commit=False)
+    update_channel = "local" if mode == "unify" else str((info or {}).get("provider") or "remote") if mode == "remote" else "local"
+    if update_channel == "github" and (info or {}).get("mirror_provider"):
+        update_channel = str((info or {}).get("mirror_channel_name") or "gitcode")
+    registry.record_update_channel_event(update_channel, "update", "success", rows[0]["name"], f"{updated} copies updated", 0)
     for row in rows:
         registry.record_update_check(
             row["id"],
@@ -3868,6 +4110,13 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
                 return
             if self.path == "/api/source-update":
                 result = update_source(payload.get("action", ""), payload.get("platform", ""), payload.get("root", ""), payload.get("enabled"))
+                json_response(self, {"ok": True, **result})
+                return
+            if self.path == "/api/update-channels":
+                json_response(self, {"ok": True, "channels": Registry().update_channels()})
+                return
+            if self.path == "/api/update-channel-update":
+                result = Registry().update_channel(payload.get("action", ""), payload)
                 json_response(self, {"ok": True, **result})
                 return
             if self.path == "/api/pick-directory":
@@ -4481,6 +4730,7 @@ ADMIN_HTML = r"""<!doctype html>
           <div class="more-list">
             <button onclick="showInstallSkill()" data-i18n="installSkill">Install Skill</button>
             <button onclick="showSources()" data-i18n="sourceManagement">Sources</button>
+            <button onclick="showUpdateChannels()" data-i18n="updateChannelManagement">Update Channels</button>
             <button onclick="health()" data-i18n="healthCheck">Health</button>
             <button onclick="report()" data-i18n="snapshotExport">Export Snapshot</button>
             <button onclick="showLogs()" data-i18n="operationLog">Operation Log</button>
@@ -4585,6 +4835,7 @@ ADMIN_HTML = r"""<!doctype html>
         report: 'Report',
         snapshotExport: 'Export Report',
         sourceManagement: 'Source Management',
+        updateChannelManagement: 'Update Channels',
         recommendations: 'Smart Scan',
         operationLog: 'Operation Log',
         installSkill: 'Install Skill',
@@ -4607,6 +4858,23 @@ ADMIN_HTML = r"""<!doctype html>
         discoveryUnavailableHelp: 'find-skills is not installed. Updates still work for skills with bound sources, and local version unification/manual source binding still work.',
         chooseDirectory: 'Choose Directory',
         rootPath: 'Root Path',
+        updateChannel: 'Update Channel',
+        addChannel: 'Add Channel',
+        channelName: 'Name',
+        channelLabel: 'Display name',
+        channelKind: 'Type',
+        channelBaseUrl: 'Address',
+        channelPriority: 'Priority',
+        channelScore: 'Score',
+        channelStats: 'Stats',
+        channelSearches: 'Searches',
+        channelChecks: 'Checks',
+        channelDownloads: 'Downloads',
+        channelUpdates: 'Updates',
+        channelSuccessRate: 'Success rate',
+        channelLastUsed: 'Last used',
+        channelLastError: 'Last error',
+        deleteChannelConfirm: name => `Delete update channel ${name}? Existing stats will be kept, but the channel will no longer be used.`,
         adviceReason: 'Reason',
         adviceIntro: 'Choose a scan scope, then check updates, health issues, incomplete information, and duplicates. Changes still require confirmation.',
         smartRun: 'Skills Smart Check',
@@ -4782,6 +5050,7 @@ ADMIN_HTML = r"""<!doctype html>
         report: '生成报告',
         snapshotExport: '导出报告',
         sourceManagement: '来源管理',
+        updateChannelManagement: '更新渠道管理',
         recommendations: '智能扫描',
         operationLog: '操作日志',
         installSkill: '安装 Skill',
@@ -4804,6 +5073,23 @@ ADMIN_HTML = r"""<!doctype html>
         discoveryUnavailableHelp: '未检测到 find-skills。已有来源的更新、本地版本统一、手动绑定来源仍可正常使用。',
         chooseDirectory: '选择目录',
         rootPath: '目录路径',
+        updateChannel: '更新渠道',
+        addChannel: '添加渠道',
+        channelName: '名称',
+        channelLabel: '显示名称',
+        channelKind: '类型',
+        channelBaseUrl: '地址',
+        channelPriority: '优先级',
+        channelScore: '评分',
+        channelStats: '统计',
+        channelSearches: '搜索',
+        channelChecks: '检查',
+        channelDownloads: '下载',
+        channelUpdates: '更新',
+        channelSuccessRate: '成功率',
+        channelLastUsed: '最近使用',
+        channelLastError: '最近错误',
+        deleteChannelConfirm: name => `确认删除更新渠道 ${name} 吗？历史统计会保留，但后续不会再使用这个渠道。`,
         adviceReason: '原因',
         adviceIntro: '选择扫描范围后，检测更新、健康异常、信息不完整和重复项。真正修改前仍会二次确认。',
         smartRun: 'Skills 智能检测',
@@ -5699,6 +5985,79 @@ ADMIN_HTML = r"""<!doctype html>
       await api('/api/source-update', {action: 'toggle', platform, root, enabled});
       await showSources();
       await load();
+    }
+    async function showUpdateChannels() {
+      closeMoreMenus();
+      try {
+        const data = await api('/api/update-channels');
+        $('detailTitle').textContent = t('updateChannelManagement');
+        $('detailBody').innerHTML = `
+          <div class="detail-grid">
+            <div class="detail-row"><div class="detail-label">${esc(t('addChannel'))}</div><div class="detail-value">
+              <div class="row-actions">
+                <input id="channelName" placeholder="${esc(t('channelName'))}" style="width:130px">
+                <input id="channelLabel" placeholder="${esc(t('channelLabel'))}" style="width:150px">
+                <input id="channelKind" placeholder="${esc(t('channelKind'))}" style="width:120px">
+                <input id="channelBaseUrl" placeholder="${esc(t('channelBaseUrl'))}" style="min-width:220px">
+                <input id="channelPriority" type="number" value="40" min="0" max="100" style="width:86px">
+                <button onclick="addUpdateChannel()">${esc(t('addChannel'))}</button>
+              </div>
+            </div></div>
+            <div class="detail-row"><div class="detail-label">${esc(t('updateChannel'))}</div><div class="detail-value">${updateChannelTable(data.channels || [])}</div></div>
+          </div>`;
+        $('detailModal').classList.add('open');
+      } catch(e) {
+        toast(e.message);
+      }
+    }
+    function updateChannelTable(channels) {
+      return `<div class="choice-list">${channels.map(channel => {
+        const rate = Math.round(Number(channel.success_rate || 0) * 100);
+        const stats = [
+          `${t('channelSearches')}: ${channel.searches || 0}`,
+          `${t('channelChecks')}: ${channel.checks || 0}`,
+          `${t('channelDownloads')}: ${channel.downloads || 0}`,
+          `${t('channelUpdates')}: ${channel.updates || 0}`,
+          `${t('channelSuccessRate')}: ${rate}%`
+        ].join(' · ');
+        return `
+          <div class="choice">
+            <div>
+              <strong>${esc(channel.label || channel.name)} <span class="pill">${esc(channel.name)}</span> <span class="pill ${channel.enabled ? 'score-good' : 'score-mid'}">${esc(channel.enabled ? t('active') : t('inactive'))}</span></strong>
+              <small>${esc(t('channelKind'))}: ${esc(channel.kind || '-')} · ${esc(t('channelBaseUrl'))}: ${esc(channel.base_url || '-')}</small>
+              <small>${esc(t('channelStats'))}: ${esc(stats)}</small>
+              <small>${esc(t('channelScore'))}: ${esc(channel.score || 0)} · ${esc(t('channelPriority'))}: ${esc(channel.priority || 0)}${channel.last_used_at ? ` · ${esc(t('channelLastUsed'))}: ${esc(formatUsageTime(channel.last_used_at))}` : ''}</small>
+              ${channel.last_error ? `<small>${esc(t('channelLastError'))}: ${esc(channel.last_error)}</small>` : ''}
+            </div>
+            <div class="row-actions">
+              <button class="tiny" onclick='toggleUpdateChannel(${JSON.stringify(channel.name)},${JSON.stringify(!channel.enabled)})'>${esc(channel.enabled ? t('pause') : t('activate'))}</button>
+              <button class="tiny" onclick='deleteUpdateChannel(${JSON.stringify(channel.name)})'>${esc(t('delete'))}</button>
+            </div>
+          </div>`;
+      }).join('')}</div>`;
+    }
+    async function addUpdateChannel() {
+      const payload = {
+        action: 'add',
+        name: $('channelName').value.trim(),
+        label: $('channelLabel').value.trim(),
+        kind: $('channelKind').value.trim() || 'custom',
+        base_url: $('channelBaseUrl').value.trim(),
+        priority: Number($('channelPriority').value || 40)
+      };
+      if (!payload.name) return toast(t('channelName'));
+      await api('/api/update-channel-update', payload);
+      toast(t('addChannel'));
+      await showUpdateChannels();
+    }
+    async function toggleUpdateChannel(name, enabled) {
+      await api('/api/update-channel-update', {action: 'toggle', name, enabled});
+      await showUpdateChannels();
+    }
+    async function deleteUpdateChannel(name) {
+      if (!confirm(t('deleteChannelConfirm')(name))) return;
+      await api('/api/update-channel-update', {action: 'delete', name});
+      await showUpdateChannels();
     }
     function showRecommendations() {
       closeMoreMenus();

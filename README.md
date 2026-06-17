@@ -117,6 +117,7 @@ The local HTML dashboard is the easiest way to use the tool. It includes:
 - name-only search;
 - details and usage records;
 - custom source management;
+- update channel management with search, check, download, update, success-rate, and failure statistics;
 - skill installation from GitHub, GitLab, Gitee, GitCode, skills.sh, or zip links;
 - Smart Scan checks with a 24-hour cache and selectable full, platform, or grade scopes;
 - local version unification;
@@ -136,6 +137,8 @@ When you click update or run Smart Scan, the manager looks for newer versions in
 6. If no remote version can be found, compare local copies with the same name and offer local version unification.
 
 A failing remote source is treated as a source problem, not a skill problem. For example, GitHub rate limits or SkillsMP timeouts do not become "incomplete metadata" recommendations. GitCode mirrors are used as GitHub download fallbacks; the canonical source remains GitHub.
+
+`More -> Update Channels` records search, check, download, update, success, and failure counts for every channel. Channels are scored by enabled state, manual priority, success rate, and successful call volume; discovery channels with higher scores are tried first. Custom `mirror` channels may use `{owner}`, `{repo}`, `{prefix2}`, and `{prefix3}` placeholders for GitHub mirror fallback URLs.
 
 Start it with:
 
