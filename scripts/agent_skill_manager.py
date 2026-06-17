@@ -51,6 +51,7 @@ SMART_UPGRADE_LOCK = threading.Lock()
 SMART_UPGRADE_SNAPSHOT_KEY = "latest"
 SMART_UPGRADE_SCHEMA_VERSION = 3
 UPDATE_BUTTON_DISABLED_STATUSES = {"updated", "latest", "no_cloud", "remote_error", "unsupported"}
+GITCODE_GH_MIRROR_BASE = "https://gitcode.com/gh_mirrors"
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "version": 1,
@@ -281,6 +282,8 @@ def remote_source_from_url(url: str) -> str:
         return "gitlab"
     if "gitee.com" in host:
         return "gitee"
+    if "gitcode.com" in host or "atomgit.com" in host:
+        return "gitcode"
     if "skills.sh" in host:
         return "skills.sh"
     if "skillsmp.com" in host:
@@ -332,7 +335,7 @@ def management_scope_for_row(row: Dict[str, Any]) -> str:
         metadata = {}
     if source == "builtin" or is_builtin_path(path) or metadata.get("builtin") is True or metadata.get("type") == "builtin":
         return "builtin_observe_only"
-    if source in ("github", "gitlab", "gitee", "skills.sh", "skillsmp", "bitbucket", "vercel") or github_url:
+    if source in ("github", "gitlab", "gitee", "gitcode", "skills.sh", "skillsmp", "bitbucket", "vercel") or github_url:
         return "managed_remote"
     if source == "local":
         return "managed_local"
@@ -1994,6 +1997,49 @@ def parse_gitee_url(url: str) -> Optional[Dict[str, str]]:
     return info
 
 
+def parse_gitcode_url(url: str) -> Optional[Dict[str, str]]:
+    if not url:
+        return None
+    parsed = urllib.parse.urlparse(url)
+    if parsed.netloc.lower() not in ("gitcode.com", "www.gitcode.com", "atomgit.com", "www.atomgit.com"):
+        return None
+    path = parsed.path.strip("/")
+    if not path:
+        return None
+    repo_part = path
+    marker = ""
+    tail = ""
+    for token in ("/tree/", "/blob/"):
+        if token in path:
+            repo_part, tail = path.split(token, 1)
+            marker = token
+            break
+    repo_part = re.sub(r"\.git$", "", repo_part)
+    parts = [part for part in repo_part.split("/") if part]
+    if len(parts) < 2:
+        return None
+    info = {
+        "provider": "gitcode",
+        "project": "/".join(parts[:2]),
+        "owner": parts[0],
+        "repo": parts[1],
+        "ref": "",
+        "path": "",
+        "url": f"https://{parsed.netloc.lower()}/{'/'.join(parts[:2])}.git",
+    }
+    if len(parts) >= 3 and parts[0] == "gh_mirrors":
+        info["project"] = "/".join(parts[:3])
+        info["owner"] = parts[1]
+        info["repo"] = parts[2]
+        info["url"] = f"https://{parsed.netloc.lower()}/{'/'.join(parts[:3])}.git"
+    if marker and tail:
+        pieces = tail.split("/")
+        if pieces:
+            info["ref"] = pieces[0]
+            info["path"] = "/".join(pieces[1:])
+    return info
+
+
 def parse_skills_sh_url(url: str) -> Optional[Dict[str, str]]:
     if not url:
         return None
@@ -2082,7 +2128,7 @@ def remote_info_for_cap(row: sqlite3.Row) -> Optional[Dict[str, str]]:
     ]
     for url in urls:
         text = str(url or "")
-        info = parse_github_url(text) or parse_gitlab_url(text) or parse_gitee_url(text) or parse_skills_sh_url(text)
+        info = parse_github_url(text) or parse_gitlab_url(text) or parse_gitee_url(text) or parse_gitcode_url(text) or parse_skills_sh_url(text)
         if info:
             return info
     return None
@@ -2164,6 +2210,10 @@ def download_gitlab_archive(info: Dict[str, str], branch: str, tmpdir: Path) -> 
 def git_repo_url(info: Dict[str, str]) -> str:
     if info.get("provider") == "gitee":
         return f"https://gitee.com/{info['owner']}/{info['repo']}.git"
+    if info.get("provider") == "gitcode":
+        return info.get("url") or f"https://gitcode.com/{info['project']}.git"
+    if info.get("provider") == "gitcode_mirror":
+        return info["mirror_url"]
     raise ValueError(f"Unsupported git provider: {info.get('provider')}")
 
 
@@ -2200,11 +2250,86 @@ def download_gitee_repository(info: Dict[str, str], branch: str, tmpdir: Path) -
     return repo_root
 
 
+def download_git_repository(info: Dict[str, str], branch: str, tmpdir: Path) -> Path:
+    repo_root = clone_git_repository(git_repo_url(info), tmpdir, branch)
+    info["resolved_ref"] = current_git_branch(repo_root, branch)
+    return repo_root
+
+
+def gitcode_mirror_candidates(info: Dict[str, str]) -> List[Dict[str, str]]:
+    if info.get("provider") != "github":
+        return []
+    owner = str(info.get("owner") or "").strip()
+    repo = str(info.get("repo") or "").strip()
+    if not owner or not repo:
+        return []
+    repo_key = re.sub(r"[^A-Za-z0-9_.-]+", "-", repo).strip("-")
+    owner_key = re.sub(r"[^A-Za-z0-9_.-]+", "-", owner).strip("-")
+    prefixes = []
+    for value in (repo_key[:2], repo_key[:3], owner_key, owner_key[:2], owner_key[:3]):
+        if value and value not in prefixes:
+            prefixes.append(value)
+    candidates: List[Dict[str, str]] = []
+    for prefix in prefixes:
+        candidates.append(
+            {
+                "provider": "gitcode_mirror",
+                "mirror_provider": "GitCode",
+                "mirror_url": f"{GITCODE_GH_MIRROR_BASE}/{prefix}/{repo_key}.git",
+                "owner": owner,
+                "repo": repo,
+                "ref": str(info.get("ref") or ""),
+                "path": str(info.get("path") or ""),
+                "skill": str(info.get("skill") or ""),
+            }
+        )
+    return candidates
+
+
+def download_github_or_mirror_archive(info: Dict[str, str], branch: str, tmpdir: Path) -> Path:
+    primary_error: Optional[BaseException] = None
+    if branch:
+        try:
+            return download_github_archive(info, branch, tmpdir)
+        except (urllib.error.HTTPError, urllib.error.URLError, ValueError) as exc:
+            primary_error = exc
+    else:
+        try:
+            repo_api = f"https://api.github.com/repos/{info['owner']}/{info['repo']}"
+            branch = github_json(repo_api)["default_branch"]
+            return download_github_archive(info, branch, tmpdir)
+        except (urllib.error.HTTPError, urllib.error.URLError, ValueError) as exc:
+            primary_error = exc
+    mirror_errors: List[str] = []
+    for index, mirror in enumerate(gitcode_mirror_candidates(info), start=1):
+        attempt_dir = tmpdir / f"gitcode-mirror-{index}"
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            repo_root = download_git_repository(mirror, branch, attempt_dir)
+            info["mirror_provider"] = mirror["mirror_provider"]
+            info["mirror_url"] = mirror["mirror_url"]
+            info["resolved_ref"] = mirror.get("resolved_ref") or branch
+            return repo_root
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            mirror_errors.append(f"{mirror['mirror_url']}: {exc}")
+    if primary_error:
+        if mirror_errors:
+            raise ValueError(f"{primary_error}; GitCode mirror unavailable: {' | '.join(mirror_errors[:3])}")
+        raise primary_error
+    raise ValueError("No available GitCode mirror was found.")
+
+
 def download_remote_archive(info: Dict[str, str], branch: str, tmpdir: Path) -> Path:
     if info.get("provider") == "gitlab":
         return download_gitlab_archive(info, branch, tmpdir)
     if info.get("provider") == "gitee":
         return download_gitee_repository(info, branch, tmpdir)
+    if info.get("provider") == "gitcode":
+        return download_git_repository(info, branch, tmpdir)
+    if info.get("provider") == "gitcode_mirror":
+        return download_git_repository(info, branch, tmpdir)
+    if info.get("provider") == "github":
+        return download_github_or_mirror_archive(info, branch, tmpdir)
     return download_github_archive(info, branch, tmpdir)
 
 
@@ -2216,10 +2341,20 @@ def latest_commit_for_repo_path(info: Dict[str, str], branch: str, rel_path: str
         return commits[0]["id"] if commits else ""
     if info.get("provider") == "gitee":
         return latest_git_hash_for_ref(git_repo_url(info), branch)
+    if info.get("provider") == "gitcode":
+        return latest_git_hash_for_ref(git_repo_url(info), branch)
+    if info.get("provider") == "gitcode_mirror":
+        return latest_git_hash_for_ref(info["mirror_url"], branch)
     repo_api = f"https://api.github.com/repos/{info['owner']}/{info['repo']}"
     encoded = urllib.parse.quote(rel_path, safe="")
-    commits = github_json(f"{repo_api}/commits?sha={urllib.parse.quote(branch)}&path={encoded}&per_page=1")
-    return commits[0]["sha"] if commits else ""
+    try:
+        commits = github_json(f"{repo_api}/commits?sha={urllib.parse.quote(branch)}&path={encoded}&per_page=1")
+        return commits[0]["sha"] if commits else ""
+    except (urllib.error.HTTPError, urllib.error.URLError, ValueError):
+        mirror_url = info.get("mirror_url", "")
+        if mirror_url:
+            return latest_git_hash_for_ref(mirror_url, branch)
+        raise
 
 
 def find_remote_skill_dir(repo_root: Path, skill_name: str, local_folder: str, remote_skill: str = "") -> Optional[Path]:
@@ -2259,9 +2394,15 @@ def install_source_from_url(url: str, tmpdir: Path) -> Tuple[Path, Dict[str, str
     info = parse_github_url(clean) or parse_skills_sh_url(clean)
     if info:
         repo_api = f"https://api.github.com/repos/{info['owner']}/{info['repo']}"
-        branch = info["ref"] or github_json(repo_api)["default_branch"]
+        branch = info["ref"]
+        if not branch:
+            try:
+                branch = github_json(repo_api)["default_branch"]
+            except (urllib.error.HTTPError, urllib.error.URLError, ValueError):
+                branch = ""
         info["ref"] = branch
-        root = download_github_archive(info, branch, tmpdir)
+        root = download_remote_archive(info, branch, tmpdir)
+        branch = info.get("resolved_ref") or branch
         return root, {"source_type": "github", "source_url": f"https://github.com/{info['owner']}/{info['repo']}", "source_ref": branch, "source_path": info.get("path", ""), "source_skill": info.get("skill", "")}
     gitlab = parse_gitlab_url(clean)
     if gitlab:
@@ -2276,11 +2417,16 @@ def install_source_from_url(url: str, tmpdir: Path) -> Tuple[Path, Dict[str, str
         root = download_gitee_repository(gitee, gitee.get("ref", ""), tmpdir)
         branch = gitee.get("resolved_ref") or gitee.get("ref", "")
         return root, {"source_type": "gitee", "source_url": f"https://gitee.com/{gitee['owner']}/{gitee['repo']}", "source_ref": branch, "source_path": gitee.get("path", "")}
+    gitcode = parse_gitcode_url(clean)
+    if gitcode:
+        root = download_git_repository(gitcode, gitcode.get("ref", ""), tmpdir)
+        branch = gitcode.get("resolved_ref") or gitcode.get("ref", "")
+        return root, {"source_type": "gitcode", "source_url": gitcode.get("url", clean), "source_ref": branch, "source_path": gitcode.get("path", "")}
     parsed = urllib.parse.urlparse(clean)
     if parsed.scheme in ("http", "https") and parsed.path.lower().endswith(".zip"):
         root = download_zip_archive(clean, tmpdir)
         return root, {"source_type": remote_source_from_url(clean) or "zip", "source_url": clean, "source_ref": "", "source_path": ""}
-    raise ValueError("Only GitHub, GitLab, Gitee, skills.sh, and direct .zip links are supported")
+    raise ValueError("Only GitHub, GitLab, Gitee, GitCode, skills.sh, and direct .zip links are supported")
 
 
 def skill_install_candidates(repo_root: Path, preferred_path: str = "", preferred_name: str = "") -> List[Dict[str, Any]]:
@@ -2547,7 +2693,7 @@ def remote_error_summary(provider: str, exc: BaseException) -> Dict[str, str]:
     status = "rate_limited" if is_rate_limit_error(exc) else "error"
     if isinstance(exc, urllib.error.HTTPError) and exc.code == 404:
         status = "not_found"
-    label = {"github": "GitHub", "gitlab": "GitLab", "gitee": "Gitee", "skillsmp": "SkillsMP", "find-skills": "find-skills"}.get(provider, provider or "remote")
+    label = {"github": "GitHub", "gitlab": "GitLab", "gitee": "Gitee", "gitcode": "GitCode", "gitcode_mirror": "GitCode", "skillsmp": "SkillsMP", "find-skills": "find-skills"}.get(provider, provider or "remote")
     return {"source": label, "status": status, "message": str(exc)}
 
 
@@ -2559,6 +2705,7 @@ def remote_cache_payload(
     remote_version: str = "unknown",
     remote_hash: str = "",
     remote_path: str = "",
+    mirror_url: str = "",
     origin: str = "",
 ) -> str:
     return json.dumps(
@@ -2571,6 +2718,7 @@ def remote_cache_payload(
             "remote_version": remote_version,
             "remote_hash": remote_hash,
             "remote_path": remote_path,
+            "mirror_url": mirror_url,
             "origin": origin,
         },
         ensure_ascii=False,
@@ -2647,7 +2795,7 @@ def get_remote_snapshot(registry: Registry, skill_name: str, fresh_only: bool = 
 
 def remote_info_from_snapshot(snapshot: Dict[str, Any]) -> Optional[Dict[str, str]]:
     source_url = str(snapshot.get("source_url") or "")
-    info = parse_github_url(source_url) or parse_gitlab_url(source_url) or parse_gitee_url(source_url) or parse_skills_sh_url(source_url)
+    info = parse_github_url(source_url) or parse_gitlab_url(source_url) or parse_gitee_url(source_url) or parse_gitcode_url(source_url) or parse_skills_sh_url(source_url)
     if not info:
         return None
     info["ref"] = str(snapshot.get("source_ref") or info.get("ref") or "")
@@ -2682,6 +2830,7 @@ def snapshot_result(
         "cache_hit": True,
         "checked_at": str(snapshot.get("checked_at") or ""),
         "source_path": str(snapshot.get("source_path") or ""),
+        "mirror_url": str(snapshot.get("mirror_url") or ""),
     }
 
 
@@ -2702,9 +2851,18 @@ def fetch_remote_snapshot_for_info(
         branch = row["github_ref"] or info.get("ref") or ""
         source_url = f"https://gitee.com/{info['owner']}/{info['repo']}"
         source_label = f"{info['owner']}/{info['repo']}"
+    elif provider == "gitcode":
+        branch = row["github_ref"] or info.get("ref") or ""
+        source_url = str(info.get("url") or f"https://gitcode.com/{info['project']}")
+        source_label = str(info.get("project") or source_url)
     else:
         repo_api = f"https://api.github.com/repos/{info['owner']}/{info['repo']}"
-        branch = row["github_ref"] or info.get("ref") or github_json(repo_api)["default_branch"]
+        branch = row["github_ref"] or info.get("ref") or ""
+        if not branch:
+            try:
+                branch = github_json(repo_api)["default_branch"]
+            except (urllib.error.HTTPError, urllib.error.URLError, ValueError):
+                branch = ""
         source_url = f"https://github.com/{info['owner']}/{info['repo']}"
         source_label = f"{info['owner']}/{info['repo']}"
     with tempfile.TemporaryDirectory(prefix="asm-update-") as tmp:
@@ -2717,11 +2875,11 @@ def fetch_remote_snapshot_for_info(
         remote_version = str(metadata.get("version") or "unknown")
         rel_path = remote_dir.relative_to(repo_root).as_posix()
         remote_hash = latest_commit_for_repo_path(info, branch, rel_path)
-        return upsert_remote_snapshot(
+        snapshot = upsert_remote_snapshot(
             registry,
             {
                 "skill_name": row["name"],
-                "source_type": provider,
+                "source_type": "github" if info.get("mirror_provider") else provider,
                 "source_url": source_url,
                 "source_ref": branch,
                 "source_path": rel_path,
@@ -2729,9 +2887,12 @@ def fetch_remote_snapshot_for_info(
                 "remote_hash": remote_hash,
                 "discovered_by": discovered_by,
                 "confidence": "high" if discovered_by == "metadata" else "medium",
-                "message": "Remote version snapshot refreshed.",
+                "message": f"Remote version snapshot refreshed via {info.get('mirror_provider')} mirror." if info.get("mirror_provider") else "Remote version snapshot refreshed.",
             },
         )
+        if info.get("mirror_url"):
+            snapshot["mirror_url"] = str(info.get("mirror_url") or "")
+        return snapshot
 
 
 def latest_remote_update_cache(registry: Registry, cap_id: str) -> Optional[Dict[str, Any]]:
@@ -2791,6 +2952,7 @@ def remote_result_from_cache(
         "targets": [row_to_dict(row) for row in rows],
         "cache_hit": True,
         "checked_at": str(cached.get("checked_at") or ""),
+        "mirror_url": str(cached.get("mirror_url") or ""),
     }
 
 
@@ -2811,6 +2973,7 @@ def remember_update_result(registry: Registry, cap_id: str, result: Dict[str, An
             remote_version=str(result.get("remote_version") or "unknown"),
             remote_hash=str(result.get("remote_hash") or ""),
             remote_path=str(result.get("source_path") or ""),
+            mirror_url=str(result.get("mirror_url") or ""),
             origin=origin,
         ),
     )
@@ -2914,6 +3077,7 @@ def check_group_update(ids: Sequence[str], force_remote: bool = False, remember_
                     remote_version=snapshot.get("remote_version", "unknown"),
                     remote_hash=snapshot.get("remote_hash", ""),
                     remote_path=snapshot.get("source_path", ""),
+                    mirror_url=snapshot.get("mirror_url", ""),
                 ),
             )
             result = snapshot_result(rows, local_versions, max_local, snapshot, skipped)
@@ -2949,6 +3113,7 @@ def check_group_update(ids: Sequence[str], force_remote: bool = False, remember_
                         remote_version=snapshot.get("remote_version", "unknown"),
                         remote_hash=snapshot.get("remote_hash", ""),
                         remote_path=snapshot.get("source_path", ""),
+                        mirror_url=snapshot.get("mirror_url", ""),
                     ),
                 )
                 result = snapshot_result(rows, local_versions, max_local, snapshot, skipped)
@@ -2982,6 +3147,7 @@ def check_group_update(ids: Sequence[str], force_remote: bool = False, remember_
                         remote_version=snapshot.get("remote_version", "unknown"),
                         remote_hash=snapshot.get("remote_hash", ""),
                         remote_path=snapshot.get("source_path", ""),
+                        mirror_url=snapshot.get("mirror_url", ""),
                     ),
                 )
                 result = snapshot_result(rows, local_versions, max_local, snapshot, skipped)
@@ -3089,11 +3255,19 @@ def apply_group_update(ids: Sequence[str], mode: str) -> Dict[str, Any]:
             branch = (snapshot or {}).get("source_ref") or base["github_ref"] or info["ref"] or gitlab_json(f"https://gitlab.com/api/v4/projects/{project}")["default_branch"]
         elif info.get("provider") == "gitee":
             branch = (snapshot or {}).get("source_ref") or base["github_ref"] or info["ref"] or ""
+        elif info.get("provider") == "gitcode":
+            branch = (snapshot or {}).get("source_ref") or base["github_ref"] or info["ref"] or ""
         else:
             repo_api = f"https://api.github.com/repos/{info['owner']}/{info['repo']}"
-            branch = (snapshot or {}).get("source_ref") or base["github_ref"] or info["ref"] or github_json(repo_api)["default_branch"]
+            branch = (snapshot or {}).get("source_ref") or base["github_ref"] or info["ref"] or ""
+            if not branch:
+                try:
+                    branch = github_json(repo_api)["default_branch"]
+                except (urllib.error.HTTPError, urllib.error.URLError, ValueError):
+                    branch = ""
         with tempfile.TemporaryDirectory(prefix="asm-update-") as tmp:
             repo_root = download_remote_archive(info, branch, Path(tmp))
+            branch = info.get("resolved_ref") or branch
             snapshot_path = (snapshot or {}).get("source_path") or ""
             remote_dir = repo_root / snapshot_path if snapshot_path else find_remote_skill_dir(repo_root, base["name"], Path(base["path"]).name, info.get("skill", ""))
             if not remote_dir:
@@ -4337,6 +4511,7 @@ ADMIN_HTML = r"""<!doctype html>
         <option value="" data-i18n="allSources">All sources</option>
         <option value="local" data-i18n="local">local</option>
         <option value="github" data-i18n="github">github</option>
+        <option value="gitcode" data-i18n="gitcode">gitcode</option>
         <option value="builtin" data-i18n="builtin">builtin</option>
       </select>
     </section>
@@ -4515,6 +4690,7 @@ ADMIN_HTML = r"""<!doctype html>
         local: 'local',
         github: 'GitHub',
         gitlab: 'GitLab',
+        gitcode: 'GitCode',
         bitbucket: 'Bitbucket',
         vercel: 'Vercel',
         builtin: 'builtin',
@@ -4711,6 +4887,7 @@ ADMIN_HTML = r"""<!doctype html>
         local: '本地',
         github: 'GitHub',
         gitlab: 'GitLab',
+        gitcode: 'GitCode',
         bitbucket: 'Bitbucket',
         vercel: 'Vercel',
         builtin: '内置',
@@ -4892,7 +5069,7 @@ ADMIN_HTML = r"""<!doctype html>
       return rank || label(a).localeCompare(label(b));
     }
     function sourceRank(source) {
-      const order = { builtin: 1, github: 2, gitlab: 3, bitbucket: 4, vercel: 5, local: 99 };
+      const order = { builtin: 1, github: 2, gitcode: 3, gitlab: 4, bitbucket: 5, vercel: 6, local: 99 };
       return order[source] || 50;
     }
     function compareSource(a, b) {

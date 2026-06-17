@@ -138,7 +138,7 @@ Health checks currently validate:
 
 ## Version Checks
 
-Remote-backed capabilities are detected from repository metadata in `SKILL.md` frontmatter or `_meta.json`, including GitHub, GitLab, Gitee, and skills.sh URLs.
+Remote-backed capabilities are detected from repository metadata in `SKILL.md` frontmatter or `_meta.json`, including GitHub, GitLab, Gitee, GitCode, and skills.sh URLs.
 
 ```bash
 asm check-updates
@@ -150,7 +150,8 @@ Automatic overwrite is intentionally conservative. The update command reports lo
 
 The HTML admin provides a reviewed update flow:
 
-- Check bound repository metadata first, including GitHub, GitLab, Gitee, and skills.sh URLs found in `github_url`, `homepage`, or `repository`.
+- Check bound repository metadata first, including GitHub, GitLab, Gitee, GitCode, and skills.sh URLs found in `github_url`, `homepage`, or `repository`.
+- If GitHub is unavailable, try validated GitCode GitHub mirror candidates before falling through to discovery sources.
 - If no bound source is usable, search SkillsMP, then `find-skills` / skills.sh.
 - If a newer remote version is found, confirm before backing up and replacing every selected local copy.
 - If no newer remote version is found but local copies have different versions, offer to unify all local copies to the highest local version.
@@ -200,7 +201,7 @@ The dashboard supports:
 - usage visibility
 - usage event viewer
 - source management
-- install skills from GitHub, GitLab, Gitee, skills.sh, or zip links
+- install skills from GitHub, GitLab, Gitee, GitCode, skills.sh, or zip links
 - background Smart Scan checks with full, platform, or grade scopes
 - real activate by moving files back from `.disabled`
 - real deactivate by moving files into `.disabled`

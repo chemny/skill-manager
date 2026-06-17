@@ -18,7 +18,7 @@ Agent Skill Manager 做的事情就是把这些信息拉到一个本地后台里
 - 从本地 session logs 中导入真实的 30 天使用次数。
 - 根据状态、metadata 和文件结构计算健康分。
 - 添加和管理自己的 skills 来源目录。
-- 从 GitHub、GitLab、Gitee、skills.sh 或 zip 链接安装新的 skills。
+- 从 GitHub、GitLab、Gitee、GitCode、skills.sh 或 zip 链接安装新的 skills。
 - 导出一份简单的管理报告。
 - 检查可能的更新，并在本地版本不一致时统一到较新版本。
 - 对 skills 做停用或删除，删除前会确认并备份。
@@ -117,7 +117,7 @@ powershell -ExecutionPolicy Bypass -File ".\scripts\skill-manager.ps1" -Action W
 - 只按名称搜索；
 - 查看详情和使用记录；
 - 管理自定义来源目录；
-- 从 GitHub、GitLab、Gitee、skills.sh 或 zip 链接安装 skill；
+- 从 GitHub、GitLab、Gitee、GitCode、skills.sh 或 zip 链接安装 skill；
 - 带 24 小时缓存的智能扫描，可按全量、平台或等级范围运行；
 - 本地版本统一；
 - 通过 `.disabled` 目录实现真实启用和停用；
@@ -129,12 +129,13 @@ powershell -ExecutionPolicy Bypass -File ".\scripts\skill-manager.ps1" -Action W
 点击更新或运行智能扫描时，它会按这个顺序找新版本：
 
 1. 先读 24 小时内的本地缓存，避免反复请求远程服务。
-2. 再查 skill 自己绑定的仓库来源：GitHub、GitLab、Gitee 或 skills.sh 指向的 GitHub 仓库。
-3. 如果没有绑定来源，或者绑定来源暂时不可用，再用 SkillsMP 搜索。
-4. SkillsMP 没有结果或请求失败时，继续用 `find-skills` / skills.sh 搜索。
-5. 远程都找不到时，最后比较本地同名副本，提示是否统一到本地最高版本。
+2. 再查 skill 自己绑定的仓库来源：GitHub、GitLab、Gitee、GitCode 或 skills.sh 指向的 GitHub 仓库。
+3. 如果 GitHub 访问失败、超时或限流，会尝试 GitCode 的 GitHub 镜像；镜像只有验证可用后才会使用。
+4. 如果没有绑定来源，或者绑定来源暂时不可用，再用 SkillsMP 搜索。
+5. SkillsMP 没有结果或请求失败时，继续用 `find-skills` / skills.sh 搜索。
+6. 远程都找不到时，最后比较本地同名副本，提示是否统一到本地最高版本。
 
-某个远程来源失败不会直接说明 skill 有问题。比如 GitHub 限流、SkillsMP 超时，都会继续尝试下一条来源。
+某个远程来源失败不会直接说明 skill 有问题。比如 GitHub 限流、SkillsMP 超时，都会继续尝试下一条来源。GitCode 镜像只作为 GitHub 的下载加速 fallback，原始来源仍记录为 GitHub。
 
 启动后台：
 

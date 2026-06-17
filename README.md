@@ -18,7 +18,7 @@ This tool scans local skill directories, groups the same skill across platforms,
 - See 30-day usage counts imported from local session logs when those logs are available.
 - Check health scores based on status, metadata, and file structure.
 - Add your own skill source folders.
-- Install new skills from GitHub, GitLab, Gitee, skills.sh, or zip links.
+- Install new skills from GitHub, GitLab, Gitee, GitCode, skills.sh, or zip links.
 - Export a simple management report.
 - Review update candidates and unify local copies when versions differ.
 - Disable or delete skills with confirmation and backup.
@@ -117,7 +117,7 @@ The local HTML dashboard is the easiest way to use the tool. It includes:
 - name-only search;
 - details and usage records;
 - custom source management;
-- skill installation from GitHub, GitLab, Gitee, skills.sh, or zip links;
+- skill installation from GitHub, GitLab, Gitee, GitCode, skills.sh, or zip links;
 - Smart Scan checks with a 24-hour cache and selectable full, platform, or grade scopes;
 - local version unification;
 - real enable/disable by moving editable skills in and out of `.disabled` folders;
@@ -129,12 +129,13 @@ The local HTML dashboard is the easiest way to use the tool. It includes:
 When you click update or run Smart Scan, the manager looks for newer versions in this order:
 
 1. Read the local 24-hour cache first.
-2. Check the skill's bound repository source: GitHub, GitLab, Gitee, or the GitHub repository behind a skills.sh link.
-3. If no bound source exists, or that source is temporarily unavailable, search SkillsMP.
-4. If SkillsMP has no usable result or fails, continue with `find-skills` / skills.sh.
-5. If no remote version can be found, compare local copies with the same name and offer local version unification.
+2. Check the skill's bound repository source: GitHub, GitLab, Gitee, GitCode, or the GitHub repository behind a skills.sh link.
+3. If GitHub is unavailable, times out, or is rate-limited, try GitCode's GitHub mirror candidates and use them only after they pass validation.
+4. If no bound source exists, or that source is temporarily unavailable, search SkillsMP.
+5. If SkillsMP has no usable result or fails, continue with `find-skills` / skills.sh.
+6. If no remote version can be found, compare local copies with the same name and offer local version unification.
 
-A failing remote source is treated as a source problem, not a skill problem. For example, GitHub rate limits or SkillsMP timeouts do not become "incomplete metadata" recommendations.
+A failing remote source is treated as a source problem, not a skill problem. For example, GitHub rate limits or SkillsMP timeouts do not become "incomplete metadata" recommendations. GitCode mirrors are used as GitHub download fallbacks; the canonical source remains GitHub.
 
 Start it with:
 

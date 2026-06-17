@@ -8,6 +8,7 @@ All notable changes to Agent Skill Manager are documented here.
 - Added rescan verification after delete and update operations so the dashboard reflects actual filesystem state.
 - Added Smart Scan background jobs so long scans continue after the modal is closed and interrupted scans can be detected.
 - Added Smart Scan scope selection for full scan, Agent platform, or grade-based priority.
+- Added GitCode support for direct installs and GitCode GitHub mirror fallback when GitHub checks/downloads fail.
 
 ## 1.1.0 - 2026-06-02
 
