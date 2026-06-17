@@ -4828,6 +4828,61 @@ ADMIN_HTML = r"""<!doctype html>
       font-size: 13px;
       line-height: 1.55;
     }
+    .smart-progress-card {
+      width: min(620px, 100%);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fffdf7;
+      padding: 14px;
+      display: grid;
+      gap: 10px;
+      text-align: left;
+    }
+    .smart-progress-top {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .smart-progress-stage {
+      font-weight: 800;
+      font-size: 14px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .smart-progress-count {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .smart-progress-track {
+      width: 100%;
+      height: 9px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: #ece5d7;
+    }
+    .smart-progress-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--accent), #3aa99f);
+      transition: width .2s ease;
+    }
+    .smart-progress-meta {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .smart-progress-meta strong {
+      display: block;
+      color: var(--ink);
+      font-size: 13px;
+      margin-bottom: 2px;
+    }
     .smart-upgrade-actions {
       display: flex;
       gap: 10px;
@@ -4921,6 +4976,7 @@ ADMIN_HTML = r"""<!doctype html>
       .table-shell { max-height: none; }
       .smart-scope-options { grid-template-columns: 1fr; }
       .smart-scope-extra { grid-template-columns: 1fr; }
+      .smart-progress-meta { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -5038,6 +5094,7 @@ ADMIN_HTML = r"""<!doctype html>
     let smartPollTimer = null;
     let smartActiveJobId = '';
     let smartPanelVisible = false;
+    let currentSmartJob = null;
     let visibleGroups = [];
     let visibleLimit = 80;
     const LIST_BATCH_SIZE = 80;
@@ -5121,6 +5178,12 @@ ADMIN_HTML = r"""<!doctype html>
         smartFloatDone: 'Scan complete',
         smartFloatError: 'Scan failed',
         smartFloatCanceled: 'Scan stopped',
+        smartProgressScope: 'Scan scope',
+        smartProgressDone: 'Completed',
+        smartProgressRemaining: 'Remaining',
+        smartProgressStage: 'Current stage',
+        smartProgressUnknown: 'Preparing',
+        smartProgressScopeValue: (skills, copies) => `${skills} skills · ${copies} copies`,
         smartDetecting: 'Checking all skills',
         smartStepScan: 'Scanning local skills',
         smartStepUsage: 'Refreshing usage records',
@@ -5347,6 +5410,12 @@ ADMIN_HTML = r"""<!doctype html>
         smartFloatDone: '扫描完成',
         smartFloatError: '扫描异常',
         smartFloatCanceled: '已停止',
+        smartProgressScope: '扫描范围',
+        smartProgressDone: '已完成',
+        smartProgressRemaining: '剩余',
+        smartProgressStage: '当前阶段',
+        smartProgressUnknown: '准备中',
+        smartProgressScopeValue: (skills, copies) => `${skills} 个 skills · ${copies} 个副本`,
         smartDetecting: '正在检测所有 skills',
         smartStepScan: '扫描本地 skills',
         smartStepUsage: '刷新使用记录',
@@ -6363,9 +6432,11 @@ ADMIN_HTML = r"""<!doctype html>
               <select id="smartImportance">${['important','normal','low'].map(v => `<option value="${v}">${esc(t(v))}</option>`).join('')}</select>
             </div>
           </div>`;
+      const progress = running && currentSmartJob ? smartProgressCard(currentSmartJob) : '';
       $('detailBody').innerHTML = `
         <div class="smart-upgrade-panel">
           ${controls}
+          ${progress}
           <div class="smart-upgrade-actions">
             <button class="primary" onclick="runSmartUpgrade()" ${running ? 'disabled' : ''}>${esc(running ? t('smartRunning') : t('smartRun'))}</button>
             ${running ? `<button onclick="cancelSmartUpgrade()">${esc(t('smartStop'))}</button>` : ''}
@@ -6418,6 +6489,41 @@ ADMIN_HTML = r"""<!doctype html>
       if (job.current) parts.push(job.current);
       if (job.total) parts.push(`${job.index || 0}/${job.total}`);
       return parts.join(' ');
+    }
+    function smartScopeStats(scope) {
+      const groups = groupCapabilities(state.capabilities || []);
+      const scoped = (scope || {}).type === 'platform'
+        ? groups.map(group => ({...group, items: group.items.filter(c => c.platform === scope.platform)})).filter(group => group.items.length)
+        : (scope || {}).type === 'importance'
+          ? groups.filter(group => group.importance === scope.importance)
+          : groups;
+      return {
+        skills: scoped.length,
+        copies: scoped.reduce((sum, group) => sum + group.items.length, 0)
+      };
+    }
+    function smartProgressCard(job) {
+      const index = Math.max(0, Number(job.index || 0));
+      const total = Math.max(0, Number(job.total || 0));
+      const done = total ? Math.min(index, total) : 0;
+      const remaining = total ? Math.max(total - done, 0) : '-';
+      const pct = total ? Math.max(0, Math.min(100, Math.round(done / total * 100))) : 0;
+      const stats = smartScopeStats(job.scope || {type: 'all'});
+      const stage = t(smartStageKey(job.stage));
+      const current = job.current ? ` · ${job.current}` : '';
+      return `
+        <div class="smart-progress-card">
+          <div class="smart-progress-top">
+            <div class="smart-progress-stage">${esc(stage)}${esc(current)}</div>
+            <div class="smart-progress-count">${total ? `${esc(done)} / ${esc(total)}` : esc(t('smartProgressUnknown'))}</div>
+          </div>
+          <div class="smart-progress-track"><div class="smart-progress-fill" style="width:${pct}%"></div></div>
+          <div class="smart-progress-meta">
+            <div><strong>${esc(t('smartProgressScopeValue')(stats.skills, stats.copies))}</strong>${esc(t('smartProgressScope'))}</div>
+            <div><strong>${total ? esc(done) : '-'}</strong>${esc(t('smartProgressDone'))}</div>
+            <div><strong>${esc(remaining)}</strong>${esc(t('smartProgressRemaining'))}</div>
+          </div>
+        </div>`;
     }
     function smartHealthItems() {
       return groupCapabilities(state.capabilities)
@@ -6499,6 +6605,7 @@ ADMIN_HTML = r"""<!doctype html>
       }
     }
     function renderSmartUpgradeJob(job) {
+      currentSmartJob = job;
       renderSmartUpgradeStart(true, smartStageKey(job.stage), smartProgressDetail(job));
     }
     async function cancelSmartUpgrade() {
