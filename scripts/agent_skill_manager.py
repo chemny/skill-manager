@@ -4377,12 +4377,13 @@ ADMIN_HTML = r"""<!doctype html>
     }
     .install-actions .primary { min-width: 160px; justify-content: center; }
     .table-shell {
-      overflow: auto;
+      overflow-x: auto;
+      overflow-y: visible;
       border: 1px solid var(--line);
       background: var(--panel);
       border-radius: 8px;
       box-shadow: var(--shadow);
-      max-height: calc(100vh - 270px);
+      max-height: none;
     }
     table {
       width: 100%;
@@ -4705,6 +4706,14 @@ ADMIN_HTML = r"""<!doctype html>
       color: var(--muted);
       background: #fffaf0;
     }
+    .list-status {
+      max-width: 1480px;
+      margin: 10px auto 28px;
+      padding: 0 4px;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+    }
     @media (max-width: 900px) {
       .bar { grid-template-columns: 1fr; }
       .actions { justify-content: flex-start; }
@@ -4782,6 +4791,7 @@ ADMIN_HTML = r"""<!doctype html>
         <tbody id="rows"></tbody>
       </table>
     </section>
+    <div class="list-status" id="listStatus"></div>
   </main>
   <div class="modal" id="usageModal">
     <div class="dialog">
@@ -4817,6 +4827,9 @@ ADMIN_HTML = r"""<!doctype html>
     let sortState = { key: 'usage', direction: 'desc' };
     let metricFilter = '';
     let loadingTimer = null;
+    let visibleGroups = [];
+    let visibleLimit = 80;
+    const LIST_BATCH_SIZE = 80;
     const noUpdateGroups = new Set();
     const dict = {
       en: {
@@ -5034,7 +5047,8 @@ ADMIN_HTML = r"""<!doctype html>
         metaSummary: (copies, skills, scanned) => `${skills} skills · ${copies} installed copies · last scan ${scanned}`,
         healthDone: 'Health check complete',
         reportDone: 'Report generated',
-        deleted: backup => `Deleted. Backup: ${backup}`
+        deleted: backup => `Deleted. Backup: ${backup}`,
+        listShown: (shown, total) => `Showing ${shown} / ${total}`
       },
       zh: {
         loading: '正在加载注册表',
@@ -5251,7 +5265,8 @@ ADMIN_HTML = r"""<!doctype html>
         metaSummary: (copies, skills, scanned) => `${skills} 个 skills · ${copies} 个安装副本 · 最近扫描 ${scanned}`,
         healthDone: '健康检查完成',
         reportDone: '报告已生成',
-        deleted: backup => `已删除。备份：${backup}`
+        deleted: backup => `已删除。备份：${backup}`,
+        listShown: (shown, total) => `已显示 ${shown} / ${total}`
       }
     };
     const t = key => dict[lang][key] || dict.en[key] || key;
@@ -5770,23 +5785,14 @@ ADMIN_HTML = r"""<!doctype html>
           </div>
         </div>`;
     }
-    function render() {
-      const allGroups = groupCapabilities(state.capabilities);
-      const baseGroups = groupCapabilities(filtered());
-      const metricBaseGroups = applyNonMetricGroupFilters(baseGroups);
-      const groups = sortedGroups(applyMetricGroupFilter(metricBaseGroups));
-      updateMeta(allGroups);
-      renderMetrics(metricBaseGroups);
-      updateSortIndicators();
-      $('rows').innerHTML = groups.map(group => {
-        const keyArg = JSON.stringify(group.key);
-        const primary = group.primary;
-        const toggleAction = group.items.some(c => c.status === 'active') ? 'inactive' : 'active';
-        const toggleActionArg = JSON.stringify(toggleAction);
-        const updateButton = canUpdateGroup(group)
-          ? `<button class="tiny" onclick='openUpdate(${keyArg})'>${esc(t('update'))}</button>`
-          : `<button class="tiny" disabled>${esc(t('update'))}</button>`;
-        return `
+    function groupRowHtml(group) {
+      const keyArg = JSON.stringify(group.key);
+      const toggleAction = group.items.some(c => c.status === 'active') ? 'inactive' : 'active';
+      const toggleActionArg = JSON.stringify(toggleAction);
+      const updateButton = canUpdateGroup(group)
+        ? `<button class="tiny" onclick='openUpdate(${keyArg})'>${esc(t('update'))}</button>`
+        : `<button class="tiny" disabled>${esc(t('update'))}</button>`;
+      return `
         <tr>
           <td><strong>${esc(group.name)}</strong></td>
           <td><button class="importance-button ${importanceClass(group.importance)}" onclick='openImportance(${keyArg})'>${esc(t(group.importance))}</button></td>
@@ -5806,7 +5812,32 @@ ADMIN_HTML = r"""<!doctype html>
             </span>
           </div></td>
         </tr>`;
-      }).join('');
+    }
+    function renderVisibleRows() {
+      const shown = visibleGroups.slice(0, visibleLimit);
+      $('rows').innerHTML = shown.map(groupRowHtml).join('');
+      $('listStatus').textContent = t('listShown')(shown.length, visibleGroups.length);
+    }
+    function maybeLoadMoreRows() {
+      if (visibleLimit >= visibleGroups.length) return;
+      const scrollBottom = window.scrollY + window.innerHeight;
+      const pageBottom = document.documentElement.scrollHeight;
+      if (scrollBottom >= pageBottom - 360) {
+        visibleLimit = Math.min(visibleLimit + LIST_BATCH_SIZE, visibleGroups.length);
+        renderVisibleRows();
+      }
+    }
+    function render() {
+      const allGroups = groupCapabilities(state.capabilities);
+      const baseGroups = groupCapabilities(filtered());
+      const metricBaseGroups = applyNonMetricGroupFilters(baseGroups);
+      const groups = sortedGroups(applyMetricGroupFilter(metricBaseGroups));
+      updateMeta(allGroups);
+      renderMetrics(allGroups);
+      updateSortIndicators();
+      visibleGroups = groups;
+      visibleLimit = Math.min(LIST_BATCH_SIZE, visibleGroups.length);
+      renderVisibleRows();
     }
     async function showInstallSkill() {
       closeMoreMenus();
@@ -6613,7 +6644,8 @@ ADMIN_HTML = r"""<!doctype html>
         toast(e.message);
       }
     }
-    load();
+    window.addEventListener('scroll', maybeLoadMoreRows, {passive: true});
+    load().then(() => maybeLoadMoreRows());
   </script>
 </body>
 </html>
