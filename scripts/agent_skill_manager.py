@@ -156,6 +156,10 @@ def expand_root(root: str) -> Path:
     return Path(os.path.expandvars(root)).expanduser().resolve()
 
 
+def disabled_root_for(root: Path) -> Path:
+    return root.with_name(root.name + ".disabled")
+
+
 def parse_frontmatter(path: Path) -> Dict[str, Any]:
     if not path.exists() or not path.is_file():
         return {}
@@ -443,7 +447,7 @@ class Registry:
             "select id, status from capabilities where platform=? and path=?",
             (cap["platform"], cap["path"]),
         ).fetchone()
-        status = existing["status"] if existing else cap.get("status", "active")
+        status = cap.get("status", "active")
         if existing and existing["id"] != cap["id"]:
             self.conn.execute("update usage_events set capability_id=? where capability_id=?", (cap["id"], existing["id"]))
             self.conn.execute("update update_checks set capability_id=? where capability_id=?", (cap["id"], existing["id"]))
@@ -717,14 +721,20 @@ def discover_capabilities(config: Dict[str, Any]) -> List[Dict[str, Any]]:
         seen: set[str] = set()
         for raw_root in settings.get("roots", []):
             root = expand_root(raw_root)
-            if not root.exists():
-                continue
-            for cap in discover_root(platform, root):
-                key = cap["platform"] + "|" + cap["path"]
-                if key in seen:
+            scan_roots = [(root, "active"), (disabled_root_for(root), "inactive")]
+            for scan_root, status in scan_roots:
+                if not scan_root.exists():
                     continue
-                seen.add(key)
-                caps.append(cap)
+                for cap in discover_root(platform, scan_root):
+                    key = cap["platform"] + "|" + cap["path"]
+                    if key in seen:
+                        continue
+                    cap["status"] = status
+                    if status == "inactive":
+                        cap.setdefault("metadata", {})["disabled_root"] = str(scan_root)
+                        cap.setdefault("metadata", {})["enabled_root"] = str(root)
+                    seen.add(key)
+                    caps.append(cap)
     return caps
 
 
@@ -1665,8 +1675,9 @@ def show_command(args: argparse.Namespace) -> None:
 
 def status_command(args: argparse.Namespace, status: str) -> None:
     registry = Registry()
-    row = registry.set_status(args.name, status, args.platform or "")
-    print(f"{row['platform']} {row['kind']} {row['name']} -> {status}")
+    result = set_real_status(registry, args.name, status, args.platform or "")
+    cap = result["capability"]
+    print(f"{cap['platform']} {cap['kind']} {cap['name']} -> {status}")
 
 
 def log_use_command(args: argparse.Namespace) -> None:
@@ -2826,6 +2837,10 @@ def apply_group_update(ids: Sequence[str], mode: str) -> Dict[str, Any]:
             platform = selected_rows[0]["platform"] if selected_rows else ""
             raise ValueError(f"Builtin skill. Update via {platform}.")
         raise ValueError("No editable skill directory was selected. Only directories with SKILL.md can be updated.")
+    inactive_rows = [row for row in rows if row["status"] != "active"]
+    if inactive_rows:
+        names = ", ".join(sorted({row["name"] for row in inactive_rows}))
+        raise ValueError(f"Enable before updating: {names}")
     roots = configured_roots()
     for row in rows:
         if not is_inside_any_root(Path(row["path"]), roots):
@@ -2871,10 +2886,7 @@ def apply_group_update(ids: Sequence[str], mode: str) -> Dict[str, Any]:
     else:
         raise ValueError(f"Unsupported update mode: {mode}")
 
-    caps = discover_capabilities(load_config())
-    for cap in caps:
-        registry.upsert_capability(cap)
-    registry.prune_to_scan(caps)
+    refresh_result = refresh_registry(registry)
     registry.log_operation("update", ",".join([row["id"] for row in rows[:8]]), {"mode": mode, "updated": updated, "backups": backups, "skipped": len(skipped)}, commit=False)
     for row in rows:
         registry.record_update_check(
@@ -2885,7 +2897,7 @@ def apply_group_update(ids: Sequence[str], mode: str) -> Dict[str, Any]:
             remote_cache_payload("updated", f"Updated by {mode}.", origin="update-apply"),
         )
     registry.conn.commit()
-    return {"updated": updated, "mode": mode, "backups": backups, "skipped_targets": skipped}
+    return {"updated": updated, "mode": mode, "backups": backups, "skipped_targets": skipped, "refresh": refresh_result}
 
 
 def check_updates_command(args: argparse.Namespace) -> None:
@@ -3029,6 +3041,22 @@ def configured_roots() -> List[Path]:
     return roots
 
 
+def configured_roots_with_disabled() -> List[Path]:
+    roots = configured_roots()
+    return [*roots, *[disabled_root_for(root) for root in roots]]
+
+
+def refresh_registry(registry: Optional[Registry] = None) -> Dict[str, Any]:
+    registry = registry or Registry()
+    caps = discover_capabilities(load_config())
+    for cap in caps:
+        registry.upsert_capability(cap)
+    registry.prune_to_scan(caps)
+    registry.conn.commit()
+    usage_import = import_usage_from_logs(registry)
+    return {"count": len(caps), "usage_import": usage_import}
+
+
 def is_inside_any_root(path: Path, roots: Sequence[Path]) -> bool:
     resolved = path.resolve()
     for root in roots:
@@ -3038,6 +3066,70 @@ def is_inside_any_root(path: Path, roots: Sequence[Path]) -> bool:
         except ValueError:
             continue
     return False
+
+
+def matched_config_root(path: Path) -> Optional[Tuple[Path, Path, str]]:
+    resolved = path.resolve()
+    for root in configured_roots():
+        root_resolved = root.resolve()
+        disabled = disabled_root_for(root).resolve()
+        try:
+            resolved.relative_to(root_resolved)
+            return root_resolved, disabled, "active"
+        except ValueError:
+            pass
+        try:
+            resolved.relative_to(disabled)
+            return root_resolved, disabled, "inactive"
+        except ValueError:
+            continue
+    return None
+
+
+def status_destination_for(cap: sqlite3.Row, status: str) -> Tuple[Path, Path]:
+    if status not in ("active", "inactive"):
+        raise ValueError(f"Unsupported status: {status}")
+    if cap["source_type"] == "builtin" or is_builtin_path(cap["path"]):
+        raise ValueError("Builtin/plugin cache capabilities are observe-only and cannot be enabled or disabled here.")
+    source = Path(cap["path"])
+    if not source.exists():
+        raise ValueError(f"Path does not exist: {source}")
+    match = matched_config_root(source)
+    if not match:
+        raise ValueError(f"Refusing to move path outside configured roots: {source}")
+    active_root, inactive_root, current_state = match
+    if current_state == status:
+        return source, source
+    if current_state == "active":
+        rel = source.resolve().relative_to(active_root)
+        destination = inactive_root / rel
+    else:
+        rel = source.resolve().relative_to(inactive_root)
+        destination = active_root / rel
+    return source, destination
+
+
+def set_real_status(registry: Registry, name_or_id: str, status: str, platform: str = "") -> Dict[str, Any]:
+    cap = registry.find_one(name_or_id, platform)
+    if not cap:
+        raise ValueError(f"No capability found for {name_or_id}")
+    source, destination = status_destination_for(cap, status)
+    if source == destination:
+        row = row_to_dict(cap)
+        return {"changed": False, "capability": row, "path": str(source), "message": "Already in requested state."}
+    if destination.exists():
+        raise ValueError(f"Target already exists: {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(source), str(destination))
+    registry.log_operation("status", cap["id"], {"status": status, "name": cap["name"], "platform": cap["platform"], "from": str(source), "to": str(destination)}, commit=False)
+    refresh_registry(registry)
+    rows = [row for row in registry.all_capabilities("path=?", (str(destination),))]
+    if not rows:
+        raise ValueError(f"Moved files, but rescan did not find the capability at {destination}")
+    row = row_to_dict(rows[0])
+    if row.get("status") != status:
+        raise ValueError(f"Moved files, but status verification failed for {destination}")
+    return {"changed": True, "capability": row, "from": str(source), "to": str(destination), "status": status}
 
 
 def backup_capability_path(cap: sqlite3.Row) -> Path:
@@ -3068,13 +3160,16 @@ def delete_capability(registry: Registry, name_or_id: str, platform: str = "", c
         registry.delete_capability_row(cap["id"])
         registry.log_operation("delete-missing", cap["id"], {"name": cap["name"], "platform": cap["platform"], "path": str(target)})
         return {"deleted": False, "removed_from_registry": True, "backup": "", "message": "Path was already missing."}
-    if not is_inside_any_root(target, configured_roots()):
+    if not is_inside_any_root(target, configured_roots_with_disabled()):
         raise ValueError(f"Refusing to delete path outside configured roots: {target}")
     backup_path = backup_capability_path(cap)
     if target.is_dir():
         shutil.rmtree(target)
     else:
         target.unlink()
+    refresh_registry(registry)
+    if target.exists():
+        raise ValueError(f"Delete verification failed, path still exists: {target}")
     registry.delete_capability_row(cap["id"])
     registry.log_operation("delete", cap["id"], {"name": cap["name"], "platform": cap["platform"], "path": str(target), "backup": str(backup_path)})
     return {
@@ -3413,8 +3508,8 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
                 return
             if self.path == "/api/status":
                 registry = Registry()
-                row = registry.set_status(payload["name"], payload["status"], payload.get("platform", ""))
-                json_response(self, {"ok": True, "capability": row_to_dict(row)})
+                result = set_real_status(registry, payload["name"], payload["status"], payload.get("platform", ""))
+                json_response(self, {"ok": True, **result})
                 return
             if self.path == "/api/importance":
                 count = Registry().set_importance(payload.get("ids", []), payload.get("importance", ""))
@@ -5599,7 +5694,7 @@ ADMIN_HTML = r"""<!doctype html>
     async function runAction(ids, action) {
       const targets = ids.map(id => state.capabilities.find(c => c.id === id)).filter(Boolean);
       if (!targets.length) return;
-      if (action === 'delete') {
+      if (action === 'delete' || action === 'inactive' || action === 'active') {
         const summary = targets.map(c => `${label(c.platform)}: ${c.path}`).join('\\n');
         if (!confirm(`${actionLabel(action)} ${targets[0].name}?\\n\\n${summary}`)) return;
       }
@@ -5714,11 +5809,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("name")
     p.add_argument("--platform")
     p.set_defaults(func=show_command)
-    p = sub.add_parser("activate", help="Soft activate a capability")
+    p = sub.add_parser("activate", help="Move a disabled capability back into its configured source root")
     p.add_argument("name")
     p.add_argument("--platform")
     p.set_defaults(func=lambda a: status_command(a, "active"))
-    p = sub.add_parser("deactivate", help="Soft deactivate a capability")
+    p = sub.add_parser("deactivate", help="Move a capability into the corresponding .disabled source root")
     p.add_argument("name")
     p.add_argument("--platform")
     p.set_defaults(func=lambda a: status_command(a, "inactive"))

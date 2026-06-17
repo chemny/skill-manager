@@ -41,7 +41,7 @@ If you only have a handful of skills, a file browser may be enough.
 
 Agent Skill Manager keeps its own local registry. A scan reads known local skill folders, detects skill-like folders, groups copies by name, imports usage records where possible, and stores the result in SQLite.
 
-The dashboard is just a view over that local registry. When you scan again, it refreshes the installed copies, usage counts, health scores, source labels, and update hints. Actions such as disable, update, and delete are handled from the same registry so the table and reports stay in sync.
+The dashboard is just a view over that local registry. When you scan again, it refreshes the installed copies, usage counts, health scores, source labels, and update hints. Update and delete operate on the actual local files. Disable moves editable skills into a matching `.disabled` folder, and enable moves them back.
 
 Default roots include:
 
@@ -120,7 +120,7 @@ The local HTML dashboard is the easiest way to use the tool. It includes:
 - skill installation from GitHub, GitLab, Gitee, skills.sh, or zip links;
 - smart upgrade checks with a 24-hour cache;
 - local version unification;
-- soft enable/disable status;
+- real enable/disable by moving editable skills in and out of `.disabled` folders;
 - delete with confirmation and backup;
 - report export.
 
@@ -169,7 +169,7 @@ It uses local filesystem scans, `SKILL.md` metadata, SQLite, and the Python stan
 The tool is intentionally conservative:
 
 - builtin and plugin-cache skills are treated as observe-only;
-- disable is a soft registry status, not a direct rewrite of every platform's runtime config;
+- disable moves editable skills out of the active source root into a matching `.disabled` folder;
 - delete asks for confirmation and backs up editable files first;
 - remote update checks use a 24-hour cache;
 - if no remote update is found, local copies can still be compared and unified;

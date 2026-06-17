@@ -95,14 +95,14 @@ Supported kinds include:
 
 ## Status
 
-Status changes are soft by default. They update the registry and do not move or delete platform files.
+Status changes are real filesystem moves for editable capabilities. Deactivate moves a capability from its configured source root into the matching `.disabled` root. Activate moves it back.
 
 ```bash
 asm activate skill-manager --platform codex
 asm deactivate skill-manager --platform codex
 ```
 
-Use `deactivate` for capabilities that should stop being recommended while keeping the local files. Use delete only when the capability should be backed up and removed from disk.
+Use `deactivate` for capabilities that should stop being loaded by platforms that scan the active source root. Use delete only when the capability should be backed up and removed from disk.
 
 ## Usage
 
@@ -202,8 +202,8 @@ The dashboard supports:
 - source management
 - install skills from GitHub, GitLab, Gitee, skills.sh, or zip links
 - smart upgrade checks
-- soft activate
-- soft deactivate
+- real activate by moving files back from `.disabled`
+- real deactivate by moving files into `.disabled`
 - checked update flow
 - delete with confirmation
 - health check
@@ -214,7 +214,7 @@ The HTML admin is served only from the local Python process. It uses the same SQ
 ## Safety
 
 - Do not delete skills by default.
-- Prefer soft status changes over moving files.
+- Prefer deactivate over delete when the user wants a reversible change.
 - Back up capability paths before any destructive or overwrite operation:
 
 ```bash

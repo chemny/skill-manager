@@ -2,6 +2,11 @@
 
 All notable changes to Agent Skill Manager are documented here.
 
+## Unreleased
+
+- Changed activate/deactivate from registry-only status edits to real filesystem moves using matching `.disabled` folders.
+- Added rescan verification after delete and update operations so the dashboard reflects actual filesystem state.
+
 ## 1.1.0 - 2026-06-02
 
 - Added a dashboard install flow for installing skills from GitHub, GitLab, Gitee, skills.sh, or direct zip links.

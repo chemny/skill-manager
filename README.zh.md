@@ -41,7 +41,7 @@ Agent Skill Manager 做的事情就是把这些信息拉到一个本地后台里
 
 Agent Skill Manager 会维护一份自己的本地 registry。扫描时，它会读取常见的本地 skills 目录，找到像 skill 的文件夹，把同名副本合并，尽量导入使用记录，然后把结果写入 SQLite。
 
-管理后台只是这份本地 registry 的可视化入口。每次重新扫描，安装副本、使用次数、健康分、来源标签和更新提示都会一起刷新。停用、更新、删除这些操作也会同步写回 registry，这样列表和报告看到的是同一份数据。
+管理后台只是这份本地 registry 的可视化入口。每次重新扫描，安装副本、使用次数、健康分、来源标签和更新提示都会一起刷新。更新和删除会操作真实本地文件；停用会把可编辑 skill 移到对应的 `.disabled` 目录，启用会再移回原目录。
 
 默认会扫描这些目录：
 
@@ -120,7 +120,7 @@ powershell -ExecutionPolicy Bypass -File ".\scripts\skill-manager.ps1" -Action W
 - 从 GitHub、GitLab、Gitee、skills.sh 或 zip 链接安装 skill；
 - 带 24 小时缓存的智能升级检测；
 - 本地版本统一；
-- 软启用和软停用；
+- 通过 `.disabled` 目录实现真实启用和停用；
 - 带确认和备份的删除；
 - 导出报告。
 
@@ -169,7 +169,7 @@ Agent Skill Manager 设计上兼容 Codex、Claude Code、OpenClaw、Hermes 和�
 这个工具默认比较保守：
 
 - 内置 skills 和插件缓存 skills 默认只观察；
-- 停用是管理器里的软状态，不会直接改写每个平台的运行配置；
+- 停用会把可编辑 skill 移出启用目录，放到对应的 `.disabled` 目录；
 - 删除前会确认，并尽量先备份可编辑文件；
 - 远程更新检查有 24 小时缓存；
 - 找不到远程更新时，仍然可以比较本地副本并统一版本；
