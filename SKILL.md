@@ -201,7 +201,7 @@ The dashboard supports:
 - usage event viewer
 - source management
 - install skills from GitHub, GitLab, Gitee, skills.sh, or zip links
-- smart upgrade checks
+- background Smart Scan checks with full, platform, or grade scopes
 - real activate by moving files back from `.disabled`
 - real deactivate by moving files into `.disabled`
 - checked update flow

@@ -6,6 +6,8 @@ All notable changes to Agent Skill Manager are documented here.
 
 - Changed activate/deactivate from registry-only status edits to real filesystem moves using matching `.disabled` folders.
 - Added rescan verification after delete and update operations so the dashboard reflects actual filesystem state.
+- Added Smart Scan background jobs so long scans continue after the modal is closed and interrupted scans can be detected.
+- Added Smart Scan scope selection for full scan, Agent platform, or grade-based priority.
 
 ## 1.1.0 - 2026-06-02
 

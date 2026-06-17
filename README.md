@@ -118,7 +118,7 @@ The local HTML dashboard is the easiest way to use the tool. It includes:
 - details and usage records;
 - custom source management;
 - skill installation from GitHub, GitLab, Gitee, skills.sh, or zip links;
-- smart upgrade checks with a 24-hour cache;
+- Smart Scan checks with a 24-hour cache and selectable full, platform, or grade scopes;
 - local version unification;
 - real enable/disable by moving editable skills in and out of `.disabled` folders;
 - delete with confirmation and backup;
@@ -126,7 +126,7 @@ The local HTML dashboard is the easiest way to use the tool. It includes:
 
 ## Update Source Order
 
-When you click update or run Smart Upgrade, the manager looks for newer versions in this order:
+When you click update or run Smart Scan, the manager looks for newer versions in this order:
 
 1. Read the local 24-hour cache first.
 2. Check the skill's bound repository source: GitHub, GitLab, Gitee, or the GitHub repository behind a skills.sh link.

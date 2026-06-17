@@ -118,7 +118,7 @@ powershell -ExecutionPolicy Bypass -File ".\scripts\skill-manager.ps1" -Action W
 - 查看详情和使用记录；
 - 管理自定义来源目录；
 - 从 GitHub、GitLab、Gitee、skills.sh 或 zip 链接安装 skill；
-- 带 24 小时缓存的智能升级检测；
+- 带 24 小时缓存的智能扫描，可按全量、平台或等级范围运行；
 - 本地版本统一；
 - 通过 `.disabled` 目录实现真实启用和停用；
 - 带确认和备份的删除；
@@ -126,7 +126,7 @@ powershell -ExecutionPolicy Bypass -File ".\scripts\skill-manager.ps1" -Action W
 
 ## 更新来源顺序
 
-点击更新或运行智能升级时，它会按这个顺序找新版本：
+点击更新或运行智能扫描时，它会按这个顺序找新版本：
 
 1. 先读 24 小时内的本地缓存，避免反复请求远程服务。
 2. 再查 skill 自己绑定的仓库来源：GitHub、GitLab、Gitee 或 skills.sh 指向的 GitHub 仓库。

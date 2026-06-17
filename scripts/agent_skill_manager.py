@@ -413,6 +413,31 @@ class Registry:
               checked_at text not null,
               result_json text not null
             );
+            create table if not exists background_jobs (
+              id text primary key,
+              type text not null,
+              status text not null,
+              stage text,
+              current text,
+              job_index integer default 0,
+              total integer default 0,
+              created_at text not null,
+              updated_at text not null,
+              finished_at text,
+              error text,
+              scope_json text,
+              result_json text
+            );
+            create table if not exists smart_upgrade_items (
+              job_id text not null,
+              skill_name text not null,
+              status text not null,
+              result_json text,
+              recommendation_json text,
+              error text,
+              checked_at text not null,
+              primary key (job_id, skill_name)
+            );
             create table if not exists health_checks (
               id integer primary key autoincrement,
               capability_id text not null,
@@ -648,6 +673,103 @@ class Registry:
         result["snapshot_checked_at"] = row["checked_at"]
         result["snapshot_cache_hit"] = True
         return result
+
+    def save_background_job(self, job: Dict[str, Any]) -> None:
+        self.conn.execute(
+            """
+            insert into background_jobs (
+              id, type, status, stage, current, job_index, total, created_at,
+              updated_at, finished_at, error, scope_json, result_json
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(id) do update set
+              type=excluded.type,
+              status=excluded.status,
+              stage=excluded.stage,
+              current=excluded.current,
+              job_index=excluded.job_index,
+              total=excluded.total,
+              updated_at=excluded.updated_at,
+              finished_at=excluded.finished_at,
+              error=excluded.error,
+              scope_json=excluded.scope_json,
+              result_json=excluded.result_json
+            """,
+            (
+                job["id"],
+                job.get("type", "smart_upgrade"),
+                job.get("status", "running"),
+                job.get("stage", ""),
+                job.get("current", ""),
+                int(job.get("index") or 0),
+                int(job.get("total") or 0),
+                job.get("created_at") or now_iso(),
+                job.get("updated_at") or now_iso(),
+                job.get("finished_at", ""),
+                job.get("error", ""),
+                json.dumps(job.get("scope") or {}, ensure_ascii=False),
+                json.dumps(job.get("result") or {}, ensure_ascii=False) if job.get("result") is not None else "",
+            ),
+        )
+        self.conn.commit()
+
+    def background_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute("select * from background_jobs where id=?", (job_id,)).fetchone()
+        if not row:
+            return None
+        try:
+            scope = json.loads(row["scope_json"] or "{}")
+        except json.JSONDecodeError:
+            scope = {}
+        try:
+            result = json.loads(row["result_json"] or "{}") if row["result_json"] else None
+        except json.JSONDecodeError:
+            result = None
+        return {
+            "id": row["id"],
+            "type": row["type"],
+            "status": row["status"],
+            "stage": row["stage"] or "",
+            "current": row["current"] or "",
+            "index": int(row["job_index"] or 0),
+            "total": int(row["total"] or 0),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "finished_at": row["finished_at"] or "",
+            "error": row["error"] or "",
+            "scope": scope,
+            "result": result,
+        }
+
+    def latest_background_job(self, job_type: str = "smart_upgrade") -> Optional[Dict[str, Any]]:
+        row = self.conn.execute(
+            "select id from background_jobs where type=? order by created_at desc limit 1",
+            (job_type,),
+        ).fetchone()
+        return self.background_job(row["id"]) if row else None
+
+    def save_smart_upgrade_item(self, job_id: str, skill_name: str, status: str, result: Dict[str, Any], recommendation: Optional[Dict[str, Any]] = None, error: str = "") -> None:
+        self.conn.execute(
+            """
+            insert into smart_upgrade_items (job_id, skill_name, status, result_json, recommendation_json, error, checked_at)
+            values (?, ?, ?, ?, ?, ?, ?)
+            on conflict(job_id, skill_name) do update set
+              status=excluded.status,
+              result_json=excluded.result_json,
+              recommendation_json=excluded.recommendation_json,
+              error=excluded.error,
+              checked_at=excluded.checked_at
+            """,
+            (
+                job_id,
+                skill_name,
+                status,
+                json.dumps(result or {}, ensure_ascii=False),
+                json.dumps(recommendation or {}, ensure_ascii=False) if recommendation else "",
+                error,
+                now_iso(),
+            ),
+        )
+        self.conn.commit()
 
     def operation_logs(self, limit: int = 80) -> List[sqlite3.Row]:
         return self.conn.execute(
@@ -1183,11 +1305,68 @@ def python_health_score(row: Dict[str, Any]) -> int:
     return status_score + quality_score + structure_score
 
 
-def smart_upgrade_check(progress: Optional[Any] = None, use_cache: bool = True) -> Dict[str, Any]:
+def python_is_system_optimization(name: str) -> bool:
+    normalized = str(name or "").lower()
+    names = {
+        "skill-manager",
+        "skill-creator",
+        "skill-installer",
+        "skill-vetter",
+        "skill-overlap-manager",
+        "find-skills",
+        "computer-use",
+        "control-in-app-browser",
+        "control-chrome",
+        "openai-docs",
+        "plugin-creator",
+    }
+    return normalized in names or "manager" in normalized or "installer" in normalized or "vetter" in normalized
+
+
+def python_group_importance(group: Sequence[Dict[str, Any]]) -> str:
+    override = next((str(row.get("importance_override") or "") for row in group if row.get("importance_override")), "")
+    if override in ("important", "normal", "low"):
+        return override
+    if any(row.get("source_type") == "builtin" or row.get("management_scope") == "builtin_observe_only" for row in group):
+        return "important"
+    if group and python_is_system_optimization(str(group[0].get("name") or "")):
+        return "important"
+    if sum(int(row.get("usage_30d") or 0) for row in group) > 0:
+        return "normal"
+    return "low"
+
+
+def apply_smart_scope(by_name: Dict[str, List[Dict[str, Any]]], scope: Optional[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    scope = scope or {"type": "all"}
+    scope_type = str(scope.get("type") or "all")
+    if scope_type == "platform":
+        platform = str(scope.get("platform") or "")
+        if not platform:
+            return by_name
+        return {
+            name: [row for row in group if row.get("platform") == platform]
+            for name, group in by_name.items()
+            if any(row.get("platform") == platform for row in group)
+        }
+    if scope_type == "importance":
+        importance = str(scope.get("importance") or "")
+        if importance not in ("important", "normal", "low"):
+            return by_name
+        return {
+            name: group
+            for name, group in by_name.items()
+            if python_group_importance(group) == importance
+        }
+    return by_name
+
+
+def smart_upgrade_check(progress: Optional[Any] = None, use_cache: bool = True, scope: Optional[Dict[str, Any]] = None, job_id: str = "") -> Dict[str, Any]:
+    scope = scope or {"type": "all"}
+    scope_type = str(scope.get("type") or "all")
     if use_cache:
         cache_registry = Registry()
         usage_import = import_usage_from_logs(cache_registry)
-        cached = cache_registry.smart_upgrade_snapshot(fresh_only=True)
+        cached = cache_registry.smart_upgrade_snapshot(fresh_only=True) if scope_type == "all" else None
         if cached:
             cached["usage_import"] = usage_import
             return cached
@@ -1208,6 +1387,13 @@ def smart_upgrade_check(progress: Optional[Any] = None, use_cache: bool = True) 
     by_name: Dict[str, List[Dict[str, Any]]] = {}
     for row in rows:
         by_name.setdefault(str(row["name"]).lower(), []).append(row)
+    by_name = apply_smart_scope(by_name, scope)
+    scoped_ids = {
+        str(row.get("id") or "")
+        for group in by_name.values()
+        for row in group
+        if row.get("id")
+    }
 
     def managed_rows(group: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return [
@@ -1268,12 +1454,14 @@ def smart_upgrade_check(progress: Optional[Any] = None, use_cache: bool = True) 
                 if progress:
                     progress("update", str(name), checked_updates, len(update_groups))
                 update_results.append(summary)
+                if job_id:
+                    Registry().save_smart_upgrade_item(job_id, str(name), str(summary.get("status") or "checked"), summary, item)
                 if item:
                     items.append(item)
 
     if progress:
         progress("health", "", 0, 0)
-    health_result = run_health_check()
+    health_result = run_health_check(scoped_ids)
     health_issue_names = {
         str(row.get("name") or "").lower()
         for row in health_result.get("issues", [])
@@ -1283,6 +1471,7 @@ def smart_upgrade_check(progress: Optional[Any] = None, use_cache: bool = True) 
     refreshed_by_name: Dict[str, List[Dict[str, Any]]] = {}
     for row in refreshed:
         refreshed_by_name.setdefault(str(row["name"]).lower(), []).append(row)
+    refreshed_by_name = apply_smart_scope(refreshed_by_name, scope)
 
     health_groups = sorted(refreshed_by_name.items(), key=lambda entry: entry[0])
     for index, (_, group) in enumerate(health_groups, start=1):
@@ -1337,16 +1526,18 @@ def smart_upgrade_check(progress: Optional[Any] = None, use_cache: bool = True) 
         "schema_version": SMART_UPGRADE_SCHEMA_VERSION,
         "recommendations": deduped[:500],
         "counts": counts,
+        "scope": scope,
         "checked": {
             "skills": len(refreshed_by_name),
-            "copies": len(refreshed),
+            "copies": sum(len(group) for group in refreshed_by_name.values()),
             "updates": len(update_results),
             "health": health_result.get("summary", {}),
         },
         "update_results": update_results,
         "usage_import": usage_import,
     }
-    registry.save_smart_upgrade_snapshot(result)
+    if scope_type == "all":
+        registry.save_smart_upgrade_snapshot(result)
     return result
 
 
@@ -1355,52 +1546,66 @@ def update_smart_job(job_id: str, **updates: Any) -> None:
         job = SMART_UPGRADE_JOBS.setdefault(job_id, {})
         job.update(updates)
         job["updated_at"] = now_iso()
+        if updates.get("status") in ("done", "error", "canceled"):
+            job["finished_at"] = job["updated_at"]
+        Registry().save_background_job(job)
 
-def run_smart_upgrade_job(job_id: str) -> None:
+def run_smart_upgrade_job(job_id: str, scope: Optional[Dict[str, Any]] = None) -> None:
     def progress(stage: str, current: str, index: int, total: int) -> None:
         update_smart_job(job_id, status="running", stage=stage, current=current, index=index, total=total)
 
     try:
-        result = smart_upgrade_check(progress, use_cache=False)
+        result = smart_upgrade_check(progress, use_cache=False, scope=scope, job_id=job_id)
         update_smart_job(job_id, status="done", stage="done", current="", result=result)
     except Exception as exc:
         Registry().log_operation("smart-upgrade-error", job_id, {"error": str(exc)})
         update_smart_job(job_id, status="error", stage="error", current="", error=str(exc))
 
 
-def start_smart_upgrade_job() -> Dict[str, Any]:
+def start_smart_upgrade_job(scope: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    scope = scope or {"type": "all"}
+    scope_type = str(scope.get("type") or "all")
     cache_registry = Registry()
     usage_import = import_usage_from_logs(cache_registry)
-    cached = cache_registry.smart_upgrade_snapshot(fresh_only=True)
+    cached = cache_registry.smart_upgrade_snapshot(fresh_only=True) if scope_type == "all" else None
     job_id = f"smart-{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
     if cached:
         cached["usage_import"] = usage_import
-        with SMART_UPGRADE_LOCK:
-            SMART_UPGRADE_JOBS[job_id] = {
-                "id": job_id,
-                "status": "done",
-                "stage": "done",
-                "current": "",
-                "index": (cached.get("checked") or {}).get("skills", 0),
-                "total": (cached.get("checked") or {}).get("skills", 0),
-                "created_at": now_iso(),
-                "updated_at": now_iso(),
-                "result": cached,
-                "cache_hit": True,
-            }
-        return {"job_id": job_id, "cache_hit": True}
-    with SMART_UPGRADE_LOCK:
-        SMART_UPGRADE_JOBS[job_id] = {
+        job = {
             "id": job_id,
-            "status": "running",
-            "stage": "scan",
+            "type": "smart_upgrade",
+            "status": "done",
+            "stage": "done",
             "current": "",
-            "index": 0,
-            "total": 0,
+            "index": (cached.get("checked") or {}).get("skills", 0),
+            "total": (cached.get("checked") or {}).get("skills", 0),
             "created_at": now_iso(),
             "updated_at": now_iso(),
+            "finished_at": now_iso(),
+            "result": cached,
+            "cache_hit": True,
+            "scope": scope,
         }
-    thread = threading.Thread(target=run_smart_upgrade_job, args=(job_id,), daemon=True)
+        with SMART_UPGRADE_LOCK:
+            SMART_UPGRADE_JOBS[job_id] = job
+        cache_registry.save_background_job(job)
+        return {"job_id": job_id, "cache_hit": True}
+    job = {
+        "id": job_id,
+        "type": "smart_upgrade",
+        "status": "running",
+        "stage": "scan",
+        "current": "",
+        "index": 0,
+        "total": 0,
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+        "scope": scope,
+    }
+    with SMART_UPGRADE_LOCK:
+        SMART_UPGRADE_JOBS[job_id] = job
+    cache_registry.save_background_job(job)
+    thread = threading.Thread(target=run_smart_upgrade_job, args=(job_id, scope), daemon=True)
     thread.start()
     return {"job_id": job_id}
 
@@ -1408,9 +1613,23 @@ def start_smart_upgrade_job() -> Dict[str, Any]:
 def smart_upgrade_job_status(job_id: str) -> Dict[str, Any]:
     with SMART_UPGRADE_LOCK:
         job = SMART_UPGRADE_JOBS.get(job_id)
-        if not job:
-            raise ValueError("Smart upgrade job was not found.")
-        return dict(job)
+        if job:
+            return dict(job)
+    persisted = Registry().background_job(job_id)
+    if not persisted:
+        raise ValueError("Smart upgrade job was not found.")
+    if persisted.get("status") == "running":
+        updated = parse_iso_datetime(str(persisted.get("updated_at") or ""))
+        if updated and dt.datetime.now(dt.timezone.utc).astimezone() - updated > dt.timedelta(minutes=10):
+            persisted["status"] = "error"
+            persisted["error"] = "The previous scan was interrupted. Start a new scan or retry the remaining items."
+            persisted["finished_at"] = now_iso()
+            Registry().save_background_job(persisted)
+    return persisted
+
+
+def latest_smart_upgrade_job() -> Optional[Dict[str, Any]]:
+    return Registry().latest_background_job("smart_upgrade")
 
 
 def source_discovery_status(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
@@ -2948,9 +3167,11 @@ def outdated_command(args: argparse.Namespace) -> None:
     print_table([row_to_dict(row) for row in rows], [("platform", "Platform"), ("kind", "Kind"), ("name", "Name"), ("version", "Version"), ("local_hash", "Local"), ("remote_hash", "Remote"), ("checked_at", "Checked")])
 
 
-def run_health_check() -> Dict[str, Any]:
+def run_health_check(capability_ids: Optional[set[str]] = None) -> Dict[str, Any]:
     registry = Registry()
     rows = registry.all_capabilities()
+    if capability_ids is not None:
+        rows = [row for row in rows if row["id"] in capability_ids]
     results: List[Dict[str, Any]] = []
     rules = [
         "Path exists",
@@ -3410,6 +3631,7 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
             registry = Registry()
             raw_rows = registry.all_capabilities()
             update_gates = update_gate_for_rows(registry, raw_rows)
+            latest_job = latest_smart_upgrade_job()
             rows = []
             for row in raw_rows:
                 data = row_to_dict(row)
@@ -3423,6 +3645,7 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
                     "db_path": str(DB_PATH),
                     "source_discovery": source_discovery_status(rows),
                     "smart_upgrade": registry.smart_upgrade_snapshot(fresh_only=True),
+                    "smart_job": smart_upgrade_job_status(latest_job["id"]) if latest_job else None,
                 },
             )
             return
@@ -3497,10 +3720,14 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
                 json_response(self, {"ok": True, **smart_upgrade_check()})
                 return
             if self.path == "/api/smart-upgrade-start":
-                json_response(self, {"ok": True, **start_smart_upgrade_job()})
+                json_response(self, {"ok": True, **start_smart_upgrade_job(payload.get("scope") or {"type": "all"})})
                 return
             if self.path == "/api/smart-upgrade-status":
-                json_response(self, {"ok": True, **smart_upgrade_job_status(payload.get("job_id", ""))})
+                job_id = payload.get("job_id", "")
+                latest_job = latest_smart_upgrade_job()
+                if not job_id and latest_job:
+                    job_id = latest_job["id"]
+                json_response(self, {"ok": True, **smart_upgrade_job_status(job_id)})
                 return
             if self.path == "/api/logs":
                 rows = [row_to_dict(row) for row in Registry().operation_logs()]
@@ -4073,7 +4300,7 @@ ADMIN_HTML = r"""<!doctype html>
       </div>
       <div class="actions">
         <button class="primary" onclick="scan()" data-i18n="syncScan">Sync Scan</button>
-        <button onclick="showRecommendations()" data-i18n="recommendations">Smart Upgrade</button>
+        <button onclick="showRecommendations()" data-i18n="recommendations">Smart Scan</button>
         <button onclick="refreshPage()" data-i18n="refresh">Refresh</button>
         <details class="more-menu">
           <summary data-i18n="moreActions">More</summary>
@@ -4183,7 +4410,7 @@ ADMIN_HTML = r"""<!doctype html>
         report: 'Report',
         snapshotExport: 'Export Report',
         sourceManagement: 'Source Management',
-        recommendations: 'Smart Upgrade',
+        recommendations: 'Smart Scan',
         operationLog: 'Operation Log',
         installSkill: 'Install Skill',
         installUrl: 'Skill link',
@@ -4206,12 +4433,20 @@ ADMIN_HTML = r"""<!doctype html>
         chooseDirectory: 'Choose Directory',
         rootPath: 'Root Path',
         adviceReason: 'Reason',
-        adviceIntro: 'The smart check looks for updates, health issues, incomplete information, and duplicates. Changes still require confirmation.',
+        adviceIntro: 'Choose a scan scope, then check updates, health issues, incomplete information, and duplicates. Changes still require confirmation.',
         smartRun: 'Skills Smart Check',
         smartRunning: 'Checking',
-        smartHint: 'Click to check whether all skills are working normally.',
+        smartHint: 'Choose a scope and check whether matching skills are working normally.',
+        smartScope: 'Scan scope',
+        smartScopeAll: 'Full scan',
+        smartScopePlatform: 'By platform',
+        smartScopeImportance: 'By grade',
+        smartScopeResult: 'Scan scope',
+        smartInterrupted: 'Scan interrupted',
+        smartNewScan: 'Start another scan',
         smartDetecting: 'Checking all skills',
         smartStepScan: 'Scanning local skills',
+        smartStepUsage: 'Refreshing usage records',
         smartStepUpdate: 'Checking for updates',
         smartStepHealth: 'Checking health',
         smartStepMetadata: 'Checking information completeness',
@@ -4371,7 +4606,7 @@ ADMIN_HTML = r"""<!doctype html>
         report: '生成报告',
         snapshotExport: '导出报告',
         sourceManagement: '来源管理',
-        recommendations: '智能升级',
+        recommendations: '智能扫描',
         operationLog: '操作日志',
         installSkill: '安装 Skill',
         installUrl: 'Skill 链接',
@@ -4394,12 +4629,20 @@ ADMIN_HTML = r"""<!doctype html>
         chooseDirectory: '选择目录',
         rootPath: '目录路径',
         adviceReason: '原因',
-        adviceIntro: '智能检测会检查所有 skills 是否有更新、健康异常、信息不完整和重复项。真正修改前仍会二次确认。',
+        adviceIntro: '选择扫描范围后，检测更新、健康异常、信息不完整和重复项。真正修改前仍会二次确认。',
         smartRun: 'Skills 智能检测',
         smartRunning: '检测中',
-        smartHint: '点击检测，检测所有 skills 是否正常。',
+        smartHint: '选择扫描范围后，检测对应 skills 是否正常。',
+        smartScope: '扫描范围',
+        smartScopeAll: '全量扫描',
+        smartScopePlatform: '按平台扫描',
+        smartScopeImportance: '按等级扫描',
+        smartScopeResult: '扫描范围',
+        smartInterrupted: '检测中断',
+        smartNewScan: '重新选择扫描',
         smartDetecting: '正在检测所有 skills',
         smartStepScan: '扫描本地 skills',
+        smartStepUsage: '刷新使用记录',
         smartStepUpdate: '检测是否有更新',
         smartStepHealth: '检测是否健康',
         smartStepMetadata: '检测信息是否完整',
@@ -5283,20 +5526,56 @@ ADMIN_HTML = r"""<!doctype html>
     function showRecommendations() {
       closeMoreMenus();
       $('detailTitle').textContent = t('recommendations');
-      renderSmartUpgradeStart(false, 'smartHint');
+      const job = state.smart_job || null;
+      if (job && job.status === 'running') {
+        pollSmartUpgrade(job.id);
+      } else if (job && job.status === 'done' && job.result) {
+        renderSmartUpgradeResult(job.result);
+      } else {
+        renderSmartUpgradeStart(false, 'smartHint');
+      }
       $('detailModal').classList.add('open');
     }
     function renderSmartUpgradeStart(running, statusKey, detail = '') {
       const detailText = detail ? `：${detail}` : '';
+      const controls = running ? '' : `
+          <div class="detail-grid" style="margin: 0 auto 16px; max-width: 560px; text-align:left">
+            <div class="detail-row"><div class="detail-label">${esc(t('smartScope'))}</div><div class="detail-value">
+              <select id="smartScopeType" onchange="updateSmartScopeControls()">
+                <option value="all">${esc(t('smartScopeAll'))}</option>
+                <option value="platform">${esc(t('smartScopePlatform'))}</option>
+                <option value="importance">${esc(t('smartScopeImportance'))}</option>
+              </select>
+            </div></div>
+            <div class="detail-row" id="smartPlatformRow" style="display:none"><div class="detail-label">${esc(t('platform'))}</div><div class="detail-value">
+              <select id="smartPlatform">${['shared','codex','claude_code','openclaw','hermes'].map(p => `<option value="${p}">${esc(label(p))}</option>`).join('')}</select>
+            </div></div>
+            <div class="detail-row" id="smartImportanceRow" style="display:none"><div class="detail-label">${esc(t('importance'))}</div><div class="detail-value">
+              <select id="smartImportance">${['important','normal','low'].map(v => `<option value="${v}">${esc(t(v))}</option>`).join('')}</select>
+            </div></div>
+          </div>`;
       $('detailBody').innerHTML = `
         <div class="smart-upgrade-panel">
+          ${controls}
           <button class="primary" onclick="runSmartUpgrade()" ${running ? 'disabled' : ''}>${esc(running ? t('smartRunning') : t('smartRun'))}</button>
           <div class="smart-upgrade-hint">${esc(t(statusKey))}${esc(detailText)}${running ? '<span class="loading-dots">...</span>' : ''}</div>
         </div>`;
     }
+    function updateSmartScopeControls() {
+      const type = $('smartScopeType') ? $('smartScopeType').value : 'all';
+      if ($('smartPlatformRow')) $('smartPlatformRow').style.display = type === 'platform' ? '' : 'none';
+      if ($('smartImportanceRow')) $('smartImportanceRow').style.display = type === 'importance' ? '' : 'none';
+    }
+    function selectedSmartScope() {
+      const type = $('smartScopeType') ? $('smartScopeType').value : 'all';
+      if (type === 'platform') return {type, platform: $('smartPlatform').value};
+      if (type === 'importance') return {type, importance: $('smartImportance').value};
+      return {type: 'all'};
+    }
     function smartStageKey(stage) {
       const map = {
         scan: 'smartStepScan',
+        usage: 'smartStepUsage',
         update: 'smartStepUpdate',
         health: 'smartStepHealth',
         metadata: 'smartStepMetadata',
@@ -5330,13 +5609,26 @@ ADMIN_HTML = r"""<!doctype html>
     }
     async function runSmartUpgrade() {
       try {
+        const scope = selectedSmartScope();
         renderSmartUpgradeStart(true, 'smartStepScan');
-        const start = await api('/api/smart-upgrade-start');
+        const start = await api('/api/smart-upgrade-start', {scope});
+        await pollSmartUpgrade(start.job_id);
+      } catch(e) {
+        stopLoadingDots();
+        toast(e.message);
+      }
+    }
+    async function pollSmartUpgrade(jobId) {
+      try {
         let data = null;
         while (true) {
           await new Promise(resolve => setTimeout(resolve, 1000));
-          const job = await api('/api/smart-upgrade-status', {job_id: start.job_id});
-          if (job.status === 'error') throw new Error(job.error || 'Smart upgrade failed');
+          const job = await api('/api/smart-upgrade-status', {job_id: jobId});
+          state.smart_job = job;
+          if (job.status === 'error') {
+            renderSmartUpgradeStart(false, 'smartInterrupted', job.error || '');
+            return;
+          }
           renderSmartUpgradeStart(true, smartStageKey(job.stage), smartProgressDetail(job));
           if (job.status === 'done') {
             data = job.result || {};
@@ -5349,33 +5641,46 @@ ADMIN_HTML = r"""<!doctype html>
         applyI18n();
         fillFilters();
         render();
-        const recommendationItems = data.recommendations || [];
         stopLoadingDots();
-        const items = recommendationItems;
-        const counts = data.counts || {};
-        const rateLimited = (data.update_results || []).filter(item => {
-          if (item.status === 'rate_limited') return true;
-          return (item.remote_errors || []).some(error => error.status === 'rate_limited');
-        }).length;
-        const rateLimitNotice = rateLimited
-          ? `<div class="empty" style="margin-bottom:12px">${esc(t('smartRateLimitWarning')(rateLimited))}</div>`
-          : '';
-        const metricItems = [
-          ['update', counts.update || 0],
-          ['health', counts.health || 0],
-          ['metadata', counts.metadata || 0],
-          ['review', counts.review || 0]
-        ];
-        $('detailBody').innerHTML = `
-          <div class="metrics" style="grid-template-columns: repeat(4, minmax(90px, 1fr)); margin-bottom:12px">
-            ${metricItems.map(([key, value]) => `<div class="metric"><strong>${esc(value)}</strong><span>${esc(issueLabel(key))}</span></div>`).join('')}
-          </div>
-          ${rateLimitNotice}
-          <div class="choice-list">${items.map(item => recommendationCard(item)).join('') || `<div class="empty">${esc(t('smartNoIssues'))}</div>`}</div>`;
+        renderSmartUpgradeResult(data);
       } catch(e) {
         stopLoadingDots();
         toast(e.message);
       }
+    }
+    function renderSmartUpgradeResult(data) {
+      const items = data.recommendations || [];
+      const counts = data.counts || {};
+      const scope = data.scope || {type: 'all'};
+      const rateLimited = (data.update_results || []).filter(item => {
+        if (item.status === 'rate_limited') return true;
+        return (item.remote_errors || []).some(error => error.status === 'rate_limited');
+      }).length;
+      const rateLimitNotice = rateLimited
+        ? `<div class="empty" style="margin-bottom:12px">${esc(t('smartRateLimitWarning')(rateLimited))}</div>`
+        : '';
+      const metricItems = [
+        ['update', counts.update || 0],
+        ['health', counts.health || 0],
+        ['metadata', counts.metadata || 0],
+        ['review', counts.review || 0]
+      ];
+      $('detailBody').innerHTML = `
+        <div class="empty" style="margin-bottom:12px; display:flex; align-items:center; justify-content:space-between; gap:12px">
+          <span>${esc(t('smartScopeResult'))}: ${esc(smartScopeLabel(scope))}</span>
+          <button onclick="renderSmartUpgradeStart(false, 'smartHint')">${esc(t('smartNewScan'))}</button>
+        </div>
+        <div class="metrics" style="grid-template-columns: repeat(4, minmax(90px, 1fr)); margin-bottom:12px">
+          ${metricItems.map(([key, value]) => `<div class="metric"><strong>${esc(value)}</strong><span>${esc(issueLabel(key))}</span></div>`).join('')}
+        </div>
+        ${rateLimitNotice}
+        <div class="choice-list">${items.map(item => recommendationCard(item)).join('') || `<div class="empty">${esc(t('smartNoIssues'))}</div>`}</div>`;
+    }
+    function smartScopeLabel(scope) {
+      if (!scope || scope.type === 'all') return t('smartScopeAll');
+      if (scope.type === 'platform') return `${t('smartScopePlatform')} · ${label(scope.platform || '')}`;
+      if (scope.type === 'importance') return `${t('smartScopeImportance')} · ${t(scope.importance || 'normal')}`;
+      return t('smartScopeAll');
     }
     function recommendationCard(item) {
       const ids = item.ids || [];
