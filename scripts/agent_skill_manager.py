@@ -56,7 +56,7 @@ SMART_UPGRADE_LOCK = threading.Lock()
 class SmartUpgradeCanceled(Exception):
     pass
 SMART_UPGRADE_SNAPSHOT_KEY = "latest"
-SMART_UPGRADE_SCHEMA_VERSION = 3
+SMART_UPGRADE_SCHEMA_VERSION = 4
 UPDATE_BUTTON_DISABLED_STATUSES = {"updated", "latest", "no_cloud", "remote_error", "unsupported"}
 GITCODE_GH_MIRROR_BASE = "https://gitcode.com/gh_mirrors"
 
@@ -709,7 +709,50 @@ class Registry:
         if commit:
             self.conn.commit()
 
+    def smart_upgrade_cache_state(self) -> Dict[str, Any]:
+        counts = self.conn.execute(
+            """
+            select count(*) as copies, count(distinct lower(name)) as skills
+            from capabilities
+            where kind='skill'
+            """
+        ).fetchone()
+        remote = self.conn.execute("select max(checked_at) as checked_at from remote_snapshots").fetchone()
+        checks = self.conn.execute("select max(checked_at) as checked_at from update_checks").fetchone()
+        scanned = self.conn.execute("select max(last_scanned_at) as scanned_at from capabilities where kind='skill'").fetchone()
+        return {
+            "skills": int((counts or {})["skills"] or 0),
+            "copies": int((counts or {})["copies"] or 0),
+            "remote_snapshots_checked_at": (remote or {})["checked_at"] or "",
+            "update_checks_checked_at": (checks or {})["checked_at"] or "",
+            "last_scanned_at": (scanned or {})["scanned_at"] or "",
+        }
+
+    def smart_upgrade_cache_valid(self, result: Dict[str, Any], checked_at: Optional[dt.datetime]) -> bool:
+        if not checked_at:
+            return False
+        saved = result.get("cache_state") or {}
+        if not isinstance(saved, dict):
+            return False
+        current = self.smart_upgrade_cache_state()
+        for key in ("skills", "copies"):
+            if int(saved.get(key) or 0) != int(current.get(key) or 0):
+                return False
+        for key in ("remote_snapshots_checked_at", "update_checks_checked_at", "last_scanned_at"):
+            current_value = str(current.get(key) or "")
+            saved_value = str(saved.get(key) or "")
+            if current_value and current_value != saved_value:
+                current_dt = parse_iso_datetime(current_value)
+                saved_dt = parse_iso_datetime(saved_value)
+                if current_dt and saved_dt and current_dt > saved_dt:
+                    return False
+                if current_dt and not saved_dt:
+                    return False
+        return True
+
     def save_smart_upgrade_snapshot(self, result: Dict[str, Any]) -> None:
+        result = dict(result)
+        result["cache_state"] = self.smart_upgrade_cache_state()
         self.conn.execute(
             """
             insert into smart_upgrade_snapshots (snapshot_key, checked_at, result_json)
@@ -737,6 +780,8 @@ class Registry:
         except json.JSONDecodeError:
             return None
         if result.get("schema_version") != SMART_UPGRADE_SCHEMA_VERSION:
+            return None
+        if fresh_only and not self.smart_upgrade_cache_valid(result, checked_at):
             return None
         result["snapshot_checked_at"] = row["checked_at"]
         result["snapshot_cache_hit"] = True
