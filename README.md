@@ -103,8 +103,17 @@ bin/asm web --open
 On Windows:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File ".\scripts\skill-manager.ps1" -Action Scan
-powershell -ExecutionPolicy Bypass -File ".\scripts\skill-manager.ps1" -Action Web
+powershell -ExecutionPolicy Bypass -File ".\scripts\start-manager.ps1"
+```
+
+You can also double-click `scripts\start-manager.cmd`.
+
+The Windows launcher checks for Python 3.9+ using `py -3`, `python`, then `python3`, and opens `http://127.0.0.1:8765/` after the local server starts.
+
+For a first-time Windows check:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ".\scripts\install-windows.ps1"
 ```
 
 ## The Dashboard
@@ -167,6 +176,14 @@ ASM_HOME=/tmp/asm-test python3 scripts/agent_skill_manager.py list
 Agent Skill Manager is designed to work across Codex, Claude Code, OpenClaw, Hermes, and public skill directories.
 
 It uses local filesystem scans, `SKILL.md` metadata, SQLite, and the Python standard library. Platform paths are defaults, not hard requirements.
+
+Windows support is built around PowerShell and Python 3.9+:
+
+- `scripts\start-manager.ps1` starts the dashboard and opens the browser.
+- `scripts\start-manager.cmd` is a double-click launcher.
+- `scripts\skill-manager.ps1` forwards actions to the Python CLI and auto-detects `py -3`, `python`, or `python3`.
+- `scripts\install-windows.ps1` checks Python, creates the default `%USERPROFILE%\.agents\skills` folder, and prints the exact start command.
+- Git is optional for normal scanning and dashboard use, but some update and install sources need Git in `PATH`.
 
 ## Safety Notes
 

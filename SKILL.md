@@ -46,13 +46,17 @@ On Unix-like systems, the shorter wrapper is:
 ~/.agents/skills/skill-manager/bin/asm web --open
 ```
 
-On Windows, the legacy PowerShell wrapper forwards to the Python implementation:
+On Windows, the PowerShell wrapper forwards to the Python implementation and auto-detects `py -3`, `python`, or `python3`:
 
 ```powershell
+powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.agents\skills\skill-manager\scripts\start-manager.ps1"
+powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.agents\skills\skill-manager\scripts\install-windows.ps1"
 powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.agents\skills\skill-manager\scripts\skill-manager.ps1" -Action Scan
 powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.agents\skills\skill-manager\scripts\skill-manager.ps1" -Action List
 powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.agents\skills\skill-manager\scripts\skill-manager.ps1" -Action Web
 ```
+
+Windows users can also double-click `scripts\start-manager.cmd`.
 
 ## Inventory
 
@@ -213,6 +217,14 @@ The dashboard supports:
 - report generation
 
 The HTML admin is served only from the local Python process. It uses the same SQLite registry as the CLI.
+
+Windows open-box path:
+
+- Requires Python 3.9+ with one of `py -3`, `python`, or `python3` available.
+- `scripts\start-manager.ps1` starts the local dashboard and opens the browser.
+- `scripts\start-manager.cmd` provides a double-click launcher.
+- `scripts\install-windows.ps1` checks Python and creates the default `%USERPROFILE%\.agents\skills` folder.
+- Git is optional for scanning and the dashboard, but some update/install sources need Git in `PATH`.
 
 ## Safety
 

@@ -103,8 +103,17 @@ bin/asm web --open
 Windows 可以用：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File ".\scripts\skill-manager.ps1" -Action Scan
-powershell -ExecutionPolicy Bypass -File ".\scripts\skill-manager.ps1" -Action Web
+powershell -ExecutionPolicy Bypass -File ".\scripts\start-manager.ps1"
+```
+
+也可以直接双击 `scripts\start-manager.cmd`。
+
+Windows 启动脚本会自动按 `py -3`、`python`、`python3` 的顺序寻找 Python 3.9+，启动本地服务后打开 `http://127.0.0.1:8765/`。
+
+第一次在 Windows 上使用时，可以先运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ".\scripts\install-windows.ps1"
 ```
 
 ## 管理后台
@@ -167,6 +176,14 @@ ASM_HOME=/tmp/asm-test python3 scripts/agent_skill_manager.py list
 Agent Skill Manager 设计上兼容 Codex、Claude Code、OpenClaw、Hermes 和公共 skills 目录。
 
 它主要依赖本地文件扫描、`SKILL.md` metadata、SQLite 和 Python 标准库。各平台路径只是默认值，不是硬性要求。
+
+Windows 支持主要基于 PowerShell 和 Python 3.9+：
+
+- `scripts\start-manager.ps1`：启动后台并打开浏览器。
+- `scripts\start-manager.cmd`：可双击启动。
+- `scripts\skill-manager.ps1`：把操作转发给 Python CLI，并自动探测 `py -3`、`python` 或 `python3`。
+- `scripts\install-windows.ps1`：检查 Python，创建默认 `%USERPROFILE%\.agents\skills` 目录，并打印启动命令。
+- Git 不是扫描和打开后台的必需依赖，但部分更新和安装来源需要系统里已安装 Git，并能在 PATH 中调用。
 
 ## 安全边界
 

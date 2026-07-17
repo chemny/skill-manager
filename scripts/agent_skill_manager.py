@@ -45,7 +45,7 @@ REPORT_DIR = APP_DIR / "reports"
 BACKUP_DIR = APP_DIR / "backups"
 LOG_DIR = APP_DIR / "logs"
 VERSION_PART_RE = re.compile(r"^\d+(?:\.\d+)+(?:[-+][A-Za-z0-9_.-]+)?$")
-SKILL_MD_PATH_RE = re.compile(r"(?:~|/Users/[^\s\"'`<>]+|/opt/[^\s\"'`<>]+)[^\s\"'`<>]*?/SKILL\.md")
+SKILL_MD_PATH_RE = re.compile(r"(?:~|/Users/[^\s\"'`<>]+|/opt/[^\s\"'`<>]+|[A-Za-z]:[\\/][^\s\"'`<>]+|\\\\[^\s\"'`<>]+)[^\s\"'`<>]*?[\\/]SKILL\.md")
 REMOTE_UPDATE_CACHE_TTL = dt.timedelta(hours=1)
 SMART_UPDATE_ITEM_TIMEOUT_SECONDS = 45
 SMART_UPDATE_MAX_WORKERS = 8
@@ -56,7 +56,7 @@ SMART_UPGRADE_LOCK = threading.Lock()
 class SmartUpgradeCanceled(Exception):
     pass
 SMART_UPGRADE_SNAPSHOT_KEY = "latest"
-SMART_UPGRADE_SCHEMA_VERSION = 4
+SMART_UPGRADE_SCHEMA_VERSION = 5
 UPDATE_BUTTON_DISABLED_STATUSES = {"updated", "latest", "no_cloud", "remote_error", "unsupported"}
 GITCODE_GH_MIRROR_BASE = "https://gitcode.com/gh_mirrors"
 
@@ -115,7 +115,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 }
 
 try:
-    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 except (AttributeError, ValueError):
     pass
 
@@ -1638,11 +1638,16 @@ def management_recommendations() -> Dict[str, Any]:
         if snapshot:
             remote_version = str(snapshot.get("remote_version") or "unknown")
             if remote_version != "unknown" and (max_local == "unknown" or version_gt(remote_version, max_local)):
-                items.append(item_payload("update", "medium", name, group, f"Remote version is newer: {remote_version}."))
+                update_item = item_payload("update", "medium", name, group, f"Remote version is newer: {remote_version}.")
+                update_item["update_mode"] = "remote"
+                update_item["remote_version"] = remote_version
+                items.append(update_item)
                 update_added = True
         if len(versions) > 1:
             if not update_added:
-                items.append(item_payload("update", "medium", name, group, f"Local versions differ: {', '.join(versions)}."))
+                update_item = item_payload("update", "medium", name, group, f"Local versions differ: {', '.join(versions)}.")
+                update_item["update_mode"] = "unify"
+                items.append(update_item)
         remote_metadata_gaps = [row for row in group if has_remote_metadata_gap(row)]
         if remote_metadata_gaps:
             items.append(item_payload("metadata", "low", name, remote_metadata_gaps, "Remote update tracking metadata is incomplete."))
@@ -1761,10 +1766,8 @@ def smart_upgrade_check(progress: Optional[Any] = None, use_cache: bool = True, 
     scope_type = str(scope.get("type") or "all")
     if use_cache:
         cache_registry = Registry()
-        usage_import = import_usage_from_logs(cache_registry)
         cached = cache_registry.smart_upgrade_snapshot(fresh_only=True) if scope_type == "all" else None
         if cached:
-            cached["usage_import"] = usage_import
             return cached
     if progress:
         progress("scan", "", 0, 0)
@@ -1775,21 +1778,11 @@ def smart_upgrade_check(progress: Optional[Any] = None, use_cache: bool = True, 
     registry.prune_to_scan(caps)
     registry.log_operation("smart-upgrade-scan", "", {"count": len(caps)}, commit=False)
     registry.conn.commit()
-    if progress:
-        progress("usage", "", 0, 0)
-    usage_import = import_usage_from_logs(registry)
-
     rows = [row_to_dict(row) for row in registry.all_capabilities("kind='skill'")]
     by_name: Dict[str, List[Dict[str, Any]]] = {}
     for row in rows:
         by_name.setdefault(str(row["name"]).lower(), []).append(row)
     by_name = apply_smart_scope(by_name, scope)
-    scoped_ids = {
-        str(row.get("id") or "")
-        for group in by_name.values()
-        for row in group
-        if row.get("id")
-    }
 
     def managed_rows(group: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return [
@@ -1830,15 +1823,20 @@ def smart_upgrade_check(progress: Optional[Any] = None, use_cache: bool = True, 
             }
             if result.get("status") == "remote_update":
                 remote_version = str(result.get("remote_version") or "unknown")
-                return name, candidates, summary, payload("update", "medium", name, candidates, f"Remote version is newer: {remote_version}.")
+                item = payload("update", "medium", name, candidates, f"Remote version is newer: {remote_version}.")
+                item["update_mode"] = "remote"
+                item["remote_version"] = remote_version
+                return name, candidates, summary, item
             if result.get("status") == "local_mismatch":
                 versions = ", ".join(result.get("local_versions") or sorted({row.get("version") or "unknown" for row in candidates}))
-                return name, candidates, summary, payload("update", "medium", name, candidates, f"Local versions differ: {versions}.")
+                item = payload("update", "medium", name, candidates, f"Local versions differ: {versions}.")
+                item["update_mode"] = "unify"
+                return name, candidates, summary, item
             return name, candidates, summary, None
         except Exception as exc:
             if is_rate_limit_error(exc):
                 return name, candidates, {"name": name, "status": "rate_limited", "message": "Remote update check was skipped because GitHub rate limit was reached."}, None
-            return name, candidates, {"name": name, "status": "error", "message": str(exc)}, payload("metadata", "low", name, candidates, f"Update check failed: {exc}")
+            return name, candidates, {"name": name, "status": "error", "message": str(exc)}, None
 
     def record_update_check_result(name: str, candidates: List[Dict[str, Any]], summary: Dict[str, Any], item: Optional[Dict[str, Any]]) -> None:
         nonlocal checked_updates
@@ -1884,7 +1882,7 @@ def smart_upgrade_check(progress: Optional[Any] = None, use_cache: bool = True, 
                         name = str(meta["name"])
                         candidates = list(meta["candidates"])
                         summary = {"name": name, "status": "error", "message": str(exc)}
-                        item = payload("metadata", "low", name, candidates, f"Update check failed: {exc}")
+                        item = None
                     record_update_check_result(name, candidates, summary, item)
 
                 now = time.time()
@@ -1897,63 +1895,10 @@ def smart_upgrade_check(progress: Optional[Any] = None, use_cache: bool = True, 
                     candidates = list(meta["candidates"])
                     message = f"Update check timed out after {SMART_UPDATE_ITEM_TIMEOUT_SECONDS} seconds."
                     summary = {"name": name, "status": "timeout", "message": message}
-                    item = payload("metadata", "low", name, candidates, message)
-                    record_update_check_result(name, candidates, summary, item)
+                    record_update_check_result(name, candidates, summary, None)
                 submit_more()
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
-
-    if progress:
-        progress("health", "", 0, 0)
-    health_result = run_health_check(scoped_ids)
-    health_issue_names = {
-        str(row.get("name") or "").lower()
-        for row in health_result.get("issues", [])
-        if row.get("health") != "ok" or row.get("message")
-    }
-    refreshed = [row_to_dict(row) for row in Registry().all_capabilities("kind='skill'")]
-    refreshed_by_name: Dict[str, List[Dict[str, Any]]] = {}
-    for row in refreshed:
-        refreshed_by_name.setdefault(str(row["name"]).lower(), []).append(row)
-    refreshed_by_name = apply_smart_scope(refreshed_by_name, scope)
-
-    health_groups = sorted(refreshed_by_name.items(), key=lambda entry: entry[0])
-    for index, (_, group) in enumerate(health_groups, start=1):
-        if progress:
-            progress("health", str(group[0]["name"]), index, len(health_groups))
-        scores = [python_health_score(row) for row in group]
-        score = round(sum(scores) / len(scores)) if scores else 0
-        has_health_issue = str(group[0]["name"] or "").lower() in health_issue_names
-        if score < 60 or has_health_issue:
-            reason = "Health score is below 60." if score < 60 else "Health check found issues."
-            item = payload("health", "medium", group[0]["name"], group, reason)
-            item["score"] = score
-            items.append(item)
-
-    metadata_groups = sorted(refreshed_by_name.items(), key=lambda entry: entry[0])
-    for index, (_, group) in enumerate(metadata_groups, start=1):
-        if progress:
-            progress("metadata", str(group[0]["name"]), index, len(metadata_groups))
-        candidates = managed_rows(group)
-        if candidates:
-            remote_metadata_gaps = [
-                row for row in candidates
-                if row.get("management_scope") == "managed_remote"
-                and row.get("source_type") == "github"
-                and not row.get("github_hash")
-            ]
-            if remote_metadata_gaps:
-                items.append(payload("metadata", "low", group[0]["name"], remote_metadata_gaps, "Remote update tracking metadata is incomplete."))
-
-    duplicate_groups = sorted(refreshed_by_name.items(), key=lambda entry: entry[0])
-    for index, (_, group) in enumerate(duplicate_groups, start=1):
-        if progress:
-            progress("duplicates", str(group[0]["name"]), index, len(duplicate_groups))
-        candidates = managed_rows(group)
-        if len(candidates) > 1:
-            paths = {row.get("path") for row in candidates}
-            if len(paths) > 1:
-                items.append(payload("review", "low", group[0]["name"], candidates, f"{len(candidates)} installed copies detected."))
 
     counts: Dict[str, int] = {}
     deduped: List[Dict[str, Any]] = []
@@ -1972,13 +1917,11 @@ def smart_upgrade_check(progress: Optional[Any] = None, use_cache: bool = True, 
         "counts": counts,
         "scope": scope,
         "checked": {
-            "skills": len(refreshed_by_name),
-            "copies": sum(len(group) for group in refreshed_by_name.values()),
+            "skills": len(by_name),
+            "copies": sum(len(group) for group in by_name.values()),
             "updates": len(update_results),
-            "health": health_result.get("summary", {}),
         },
         "update_results": update_results,
-        "usage_import": usage_import,
     }
     if scope_type == "all":
         registry.save_smart_upgrade_snapshot(result)
@@ -2059,11 +2002,9 @@ def start_smart_upgrade_job(scope: Optional[Dict[str, Any]] = None) -> Dict[str,
     scope = scope or {"type": "all"}
     scope_type = str(scope.get("type") or "all")
     cache_registry = Registry()
-    usage_import = import_usage_from_logs(cache_registry)
     cached = cache_registry.smart_upgrade_snapshot(fresh_only=True) if scope_type == "all" else None
     job_id = f"smart-{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
     if cached:
-        cached["usage_import"] = usage_import
         job = {
             "id": job_id,
             "type": "smart_upgrade",
@@ -4163,40 +4104,112 @@ def run_health_check(capability_ids: Optional[set[str]] = None) -> Dict[str, Any
         "Path exists",
         "Skill directories contain SKILL.md",
         "Remote-managed items include update tracking metadata",
+        "Managed skills include version metadata when possible",
+        "Managed skills include a readable description when possible",
+        "Duplicate installed skill copies are listed for review",
         "Builtin/platform capabilities are observe-only unless files are missing or unreadable",
     ]
+    category_counts = {"file": 0, "structure": 0, "metadata": 0, "duplicate": 0}
+    skill_groups: Dict[str, List[Dict[str, Any]]] = {}
+    def issue_payload(data: Dict[str, Any], status: str, category: str, severity: str, message: str, action: str) -> Dict[str, Any]:
+        if category in category_counts:
+            category_counts[category] += 1
+        return {
+            "capability_id": data.get("id", ""),
+            "platform": data.get("platform", ""),
+            "kind": data.get("kind", ""),
+            "name": data.get("name", ""),
+            "health": status,
+            "category": category,
+            "severity": severity,
+            "message": message,
+            "action": action,
+            "path": data.get("path", ""),
+            "management_scope": data.get("management_scope", ""),
+        }
     for row in rows:
         data = row_to_dict(row)
         scope = data["management_scope"]
+        if data.get("kind") == "skill":
+            skill_groups.setdefault(str(data.get("name") or "").lower(), []).append(data)
         path = Path(row["path"])
         status = "ok"
         messages = []
+        row_issues: List[Dict[str, Any]] = []
         if not path.exists():
             status = "missing"
             messages.append("path missing")
+            row_issues.append(issue_payload(data, "missing", "file", "high", "path missing", "remove missing entry or restore the folder"))
         if row["kind"] == "skill" and path.is_dir() and not (path / "SKILL.md").exists():
             status = "warning"
             messages.append("missing SKILL.md")
+            row_issues.append(issue_payload(data, "warning", "structure", "high", "missing SKILL.md", "add SKILL.md or remove this folder from skill sources"))
         if scope == "managed_remote" and row["source_type"] == "github" and not row["github_hash"]:
             status = "warning"
             messages.append("missing github_hash")
+            row_issues.append(issue_payload(data, "warning", "metadata", "medium", "missing github_hash", "run update check or add source tracking metadata"))
+        if scope in ("managed_remote", "managed_local") and row["source_type"] != "builtin":
+            if not row["version"] or row["version"] == "unknown":
+                status = "warning"
+                messages.append("unknown version")
+                row_issues.append(issue_payload(data, "warning", "metadata", "low", "unknown version", "add version metadata to SKILL.md"))
+            if not str(data.get("description") or "").strip():
+                status = "warning"
+                messages.append("missing description")
+                row_issues.append(issue_payload(data, "warning", "metadata", "low", "missing description", "add a short description to SKILL.md"))
         registry.conn.execute(
             "insert into health_checks (capability_id, checked_at, status, message) values (?, ?, ?, ?)",
             (row["id"], now_iso(), status, "; ".join(messages)),
         )
         registry.conn.execute("update capabilities set health=? where id=?", (status, row["id"]))
-        results.append({"platform": row["platform"], "kind": row["kind"], "name": row["name"], "health": status, "message": "; ".join(messages), "management_scope": scope})
+        if row_issues:
+            results.extend(row_issues)
     registry.conn.commit()
+    for _key, group in sorted(skill_groups.items(), key=lambda entry: entry[0]):
+        managed = [
+            row for row in group
+            if row.get("management_scope") in ("managed_remote", "managed_local")
+            and row.get("source_type") != "builtin"
+        ]
+        paths = {row.get("path") for row in managed if row.get("path")}
+        if len(paths) <= 1:
+            continue
+        platforms = ", ".join(sorted({str(row.get("platform") or "") for row in managed}))
+        category_counts["duplicate"] += 1
+        results.append({
+            "platform": platforms or "multiple",
+            "kind": "skill",
+            "name": group[0].get("name") or "",
+            "health": "warning",
+            "category": "duplicate",
+            "severity": "medium",
+            "message": f"{len(managed)} installed copies detected",
+            "action": "review duplicate copies and keep the intended one",
+            "path": "\n".join(sorted(paths)),
+            "management_scope": "managed_local",
+        })
+    affected_keys = {
+        str(row.get("capability_id") or row.get("path") or f"{row.get('platform')}:{row.get('name')}")
+        for row in results
+        if row.get("category") != "duplicate"
+    }
+    missing_keys = {
+        str(row.get("capability_id") or row.get("path") or f"{row.get('platform')}:{row.get('name')}")
+        for row in results
+        if row.get("health") == "missing"
+    }
+    warning_count = len(affected_keys - missing_keys) + int(category_counts.get("duplicate", 0))
     summary = {
-        "total": len(results),
-        "ok": len([row for row in results if row["health"] == "ok"]),
-        "warning": len([row for row in results if row["health"] == "warning"]),
-        "missing": len([row for row in results if row["health"] == "missing"]),
+        "total": len(rows),
+        "ok": max(0, len(rows) - len(affected_keys)),
+        "warning": warning_count,
+        "missing": len(missing_keys),
         "metadata_error": len([row for row in results if row["health"] == "metadata-error"]),
+        "issues": len(results),
     }
     issues = [row for row in results if row["health"] != "ok" or row["message"]]
     registry.log_operation("health", "", {"summary": summary, "issues": len(issues)})
-    return {"rules": rules, "summary": summary, "issues": issues}
+    return {"rules": rules, "summary": summary, "categories": category_counts, "issues": issues}
 
 
 def health_command(args: argparse.Namespace) -> None:
@@ -4581,7 +4594,10 @@ def json_response(handler: http.server.BaseHTTPRequestHandler, payload: Any, sta
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(data)))
     handler.end_headers()
-    handler.wfile.write(data)
+    try:
+        handler.wfile.write(data)
+    except (BrokenPipeError, ConnectionResetError):
+        return
 
 
 class AdminHandler(http.server.BaseHTTPRequestHandler):
@@ -5205,6 +5221,85 @@ ADMIN_HTML = r"""<!doctype html>
     .detail-row:last-child { border-bottom: 0; }
     .detail-label { color: var(--muted); text-transform: uppercase; font-size: 11px; }
     .detail-value { overflow-wrap: anywhere; line-height: 1.5; }
+    .health-report {
+      display: grid;
+      gap: 12px;
+    }
+    .health-section {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fffaf0;
+      padding: 12px;
+    }
+    .health-section-title {
+      font-weight: 800;
+      margin-bottom: 8px;
+    }
+    .health-rules {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .health-rule {
+      border: 1px solid #e6dccd;
+      border-radius: 8px;
+      padding: 8px 10px;
+      background: #fffdf8;
+      color: var(--text);
+      line-height: 1.45;
+    }
+    .health-category-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .health-issue-list {
+      display: grid;
+      gap: 8px;
+      max-height: 430px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+    .health-issue-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: start;
+      border: 1px solid #e6dccd;
+      border-radius: 8px;
+      background: #fffdf8;
+      padding: 10px;
+    }
+    .health-issue-title {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      font-weight: 800;
+      margin-bottom: 6px;
+    }
+    .health-issue-meta {
+      display: grid;
+      gap: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .health-issue-path {
+      overflow-wrap: anywhere;
+    }
+    .health-severity {
+      align-self: start;
+      border: 1px solid #d8cfbf;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 12px;
+      background: #f6f1e8;
+      white-space: nowrap;
+    }
+    .health-severity-high { color: #991b1b; border-color: #f2b8b5; background: #fff1f0; }
+    .health-severity-medium { color: #92400e; border-color: #f3d08a; background: #fff7df; }
+    .health-severity-low { color: #075985; border-color: #bae6fd; background: #f0f9ff; }
     .choice-list { display: grid; gap: 8px; }
     .choice {
       display: grid;
@@ -5228,32 +5323,86 @@ ADMIN_HTML = r"""<!doctype html>
     }
     .recommendation-card {
       display: grid;
-      gap: 10px;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 12px;
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 12px;
       background: #fffaf0;
     }
-    .recommendation-card strong {
-      font-size: 15px;
-    }
-    .recommendation-meta {
+    .recommendation-card-main {
+      min-width: 0;
       display: grid;
-      grid-template-columns: 72px minmax(0, 1fr);
-      gap: 6px 12px;
+      gap: 6px;
+    }
+    .recommendation-card-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+    .recommendation-card-title strong {
+      font-size: 15px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .recommendation-summary {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px 14px;
       font-size: 12px;
       line-height: 1.45;
-    }
-    .recommendation-meta span:nth-child(odd) {
       color: var(--muted);
-      text-transform: uppercase;
-      font-size: 11px;
+    }
+    .recommendation-summary span {
+      white-space: nowrap;
+    }
+    .recommendation-reason {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
     }
     .recommendation-actions {
       display: flex;
       gap: 8px;
       flex-wrap: wrap;
       align-items: center;
+      justify-content: flex-end;
+      max-width: 280px;
+    }
+    .smart-result-toolbar {
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .smart-result-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    @media (max-width: 900px) {
+      .recommendation-card {
+        grid-template-columns: 1fr;
+      }
+      .recommendation-actions {
+        justify-content: flex-start;
+        max-width: none;
+      }
+      .smart-result-toolbar {
+        align-items: stretch;
+        flex-direction: column;
+      }
+      .smart-result-actions {
+        justify-content: flex-start;
+      }
     }
     .smart-upgrade-panel {
       display: grid;
@@ -5491,6 +5640,9 @@ ADMIN_HTML = r"""<!doctype html>
       .metrics { grid-template-columns: repeat(2, 1fr); }
       .filters { grid-template-columns: 1fr; }
       .table-shell { max-height: none; }
+      .health-rules,
+      .health-category-grid,
+      .health-issue-card { grid-template-columns: 1fr; }
       .smart-scope-options { grid-template-columns: 1fr; }
       .smart-scope-extra { grid-template-columns: 1fr; }
       .smart-progress-meta { grid-template-columns: 1fr; }
@@ -5628,6 +5780,42 @@ ADMIN_HTML = r"""<!doctype html>
         healthRules: 'Rules checked',
         healthIssues: 'Issues',
         healthNoIssues: 'No health issues found.',
+        healthIntro: 'Check local file health, Skill structure, update metadata, and duplicate installed copies.',
+        healthStart: 'Start health check',
+        healthChecking: 'Running health check',
+        healthOverview: 'Overview',
+        healthCheckItems: 'Check items',
+        healthIssueList: 'Issue list',
+        healthIssueTotal: 'Issues',
+        healthAffected: 'Needs attention',
+        healthFileIssues: 'File issues',
+        healthStructureIssues: 'Structure issues',
+        healthMetadataIssues: 'Metadata issues',
+        healthDuplicateIssues: 'Duplicates',
+        healthCategory: 'Category',
+        healthSeverity: 'Severity',
+        healthRecommendedAction: 'Recommended action',
+        healthPath: 'Path',
+        healthShowTop: count => `Showing top ${count} issues`,
+        severityHigh: 'High',
+        severityMedium: 'Medium',
+        severityLow: 'Low',
+        healthCatFile: 'File',
+        healthCatStructure: 'Structure',
+        healthCatMetadata: 'Metadata',
+        healthCatDuplicate: 'Duplicate',
+        healthMsgPathMissing: 'Path is missing.',
+        healthMsgMissingSkillMd: 'SKILL.md is missing.',
+        healthMsgMissingGithubHash: 'GitHub update hash is missing.',
+        healthMsgUnknownVersion: 'Version is unknown.',
+        healthMsgMissingDescription: 'Description is missing.',
+        healthMsgDuplicateCopies: count => `${count} installed copies detected.`,
+        healthActionRestorePath: 'Restore the folder or remove this stale entry.',
+        healthActionAddSkillMd: 'Add SKILL.md or remove this folder from skill sources.',
+        healthActionUpdateMetadata: 'Run an update check or add source tracking metadata.',
+        healthActionAddVersion: 'Add version metadata to SKILL.md.',
+        healthActionAddDescription: 'Add a short description to SKILL.md.',
+        healthActionReviewDuplicates: 'Review duplicate copies and keep the intended one.',
         healthScore: 'Health Score',
         healthHelp: 'Health score = Status score (30) + Quality score (30) + Structure health (40)\n\nBuiltin/platform capabilities are observe-only: zero usage, missing remote metadata, or unknown cloud source do not reduce their score.\n\nStatus score:\nactive 30, deactivated 18, broken 0\n\nQuality score:\nmanaged skills use 30d usage + version + description + source tracking; builtin skills use version/description/source tracking only.\n\nStructure health:\nok 40, warning 25, unknown 20, metadata-error 10, missing/broken 0',
         report: 'Report',
@@ -5690,12 +5878,12 @@ ADMIN_HTML = r"""<!doctype html>
         smartRun: 'Start Check',
         smartRestart: 'Restart check',
         smartRunning: 'Checking',
-        smartHint: 'Choose a scope and check whether matching skills are working normally.',
+        smartHint: 'Choose a scope and check whether matching skills have newer versions.',
         smartScope: 'Scan scope',
         smartScopeAll: 'Full scan',
         smartScopePlatform: 'By platform',
         smartScopeImportance: 'By grade',
-        smartScopeAllDesc: 'Check every skill in the registry.',
+        smartScopeAllDesc: 'Check updates for every skill in the registry.',
         smartScopePlatformDesc: 'Check only one Agent platform.',
         smartScopeImportanceDesc: 'Check important, regular, or other skills first.',
         smartScopeResult: 'Scan scope',
@@ -5715,15 +5903,19 @@ ADMIN_HTML = r"""<!doctype html>
         smartProgressStage: 'Current stage',
         smartProgressUnknown: 'Preparing',
         smartProgressScopeValue: skills => `This check covers ${skills} skills`,
-        smartDetecting: 'Checking all skills',
-        smartStepScan: 'Scanning local skills',
-        smartStepUsage: 'Refreshing usage records',
+        smartDetecting: 'Checking updates',
+        smartStepScan: 'Preparing update check',
+        smartStepUsage: 'Preparing update check',
         smartStepUpdate: 'Checking for updates',
-        smartStepHealth: 'Checking health',
-        smartStepMetadata: 'Checking information completeness',
-        smartStepDuplicates: 'Checking duplicates',
+        smartStepHealth: 'Checking for updates',
+        smartStepMetadata: 'Checking for updates',
+        smartStepDuplicates: 'Checking for updates',
         smartStepDone: 'Check complete',
-        smartNoIssues: 'No issues that need action were found.',
+        smartNoIssues: 'No available updates were found.',
+        smartUpdateAll: 'One-click update',
+        smartUpdateAllNone: 'No update recommendations can be applied.',
+        smartUpdateAllConfirm: count => `Update ${count} recommended skill${count === 1 ? '' : 's'} now?`,
+        smartUpdateAllDone: count => `Processed ${count} update recommendation${count === 1 ? '' : 's'}.`,
         smartRateLimitWarning: count => `GitHub API request limit was reached. Remote update checks were incomplete for ${count} skill${count === 1 ? '' : 's'}. Try again later or set GITHUB_TOKEN before starting this service.`,
         adviceAction: 'Suggested action',
         adviceImpact: 'Scope',
@@ -5734,10 +5926,10 @@ ADMIN_HTML = r"""<!doctype html>
         adviceMediumRisk: 'Medium. Review the affected platforms before changing files.',
         adviceHighRisk: 'High. Delete operations remove local files after backup.',
         actionUpdateAdvice: 'Check update',
-        actionUnifyAdvice: 'Check / unify',
+        actionUnifyAdvice: 'Update',
         actionDeactivateAdvice: 'Deactivate',
         actionDeleteAdvice: 'Delete',
-        actionDetailsAdvice: 'View details',
+        actionDetailsAdvice: 'Details',
         actionIgnoreAdvice: 'Ignore',
         exists: 'Exists',
         missing: 'Missing',
@@ -5760,7 +5952,9 @@ ADMIN_HTML = r"""<!doctype html>
         rulePathExists: 'Path exists',
         ruleSkillMd: 'Skill directories contain SKILL.md',
         ruleGithubHash: 'GitHub-backed items include github_hash',
+        ruleDuplicateCopies: 'Duplicate installed skill copies are listed for review',
         ruleVersionKnown: 'Version metadata is known when possible',
+        ruleDescriptionKnown: 'Managed skills include a readable description when possible',
         ruleRemoteTracking: 'Remote-managed items include update tracking metadata',
         ruleBuiltinObserve: 'Builtin/platform capabilities are observe-only unless files are missing or unreadable',
         snapshotDone: 'Snapshot exported',
@@ -5877,6 +6071,42 @@ ADMIN_HTML = r"""<!doctype html>
         healthRules: '检查规则',
         healthIssues: '问题项',
         healthNoIssues: '没有发现健康问题。',
+        healthIntro: '检查本地文件健康、Skill 结构、更新元数据和重复安装副本。',
+        healthStart: '开始健康检查',
+        healthChecking: '正在健康检查',
+        healthOverview: '检查概览',
+        healthCheckItems: '检查项目',
+        healthIssueList: '问题列表',
+        healthIssueTotal: '问题总数',
+        healthAffected: '需处理',
+        healthFileIssues: '文件问题',
+        healthStructureIssues: '结构问题',
+        healthMetadataIssues: '元数据问题',
+        healthDuplicateIssues: '重复副本',
+        healthCategory: '类别',
+        healthSeverity: '严重程度',
+        healthRecommendedAction: '建议处理',
+        healthPath: '路径',
+        healthShowTop: count => `显示前 ${count} 个问题`,
+        severityHigh: '高',
+        severityMedium: '中',
+        severityLow: '低',
+        healthCatFile: '文件',
+        healthCatStructure: '结构',
+        healthCatMetadata: '元数据',
+        healthCatDuplicate: '重复',
+        healthMsgPathMissing: '路径不存在。',
+        healthMsgMissingSkillMd: '缺少 SKILL.md。',
+        healthMsgMissingGithubHash: '缺少 GitHub 更新哈希。',
+        healthMsgUnknownVersion: '版本未知。',
+        healthMsgMissingDescription: '缺少介绍描述。',
+        healthMsgDuplicateCopies: count => `检测到 ${count} 个安装副本。`,
+        healthActionRestorePath: '恢复目录，或删除这条失效记录。',
+        healthActionAddSkillMd: '补充 SKILL.md，或从 skill 来源中移除这个目录。',
+        healthActionUpdateMetadata: '执行一次更新检查，或补充来源追踪元数据。',
+        healthActionAddVersion: '在 SKILL.md 中补充版本信息。',
+        healthActionAddDescription: '在 SKILL.md 中补充一句简短介绍。',
+        healthActionReviewDuplicates: '检查重复副本，只保留你确认要使用的那一份。',
         report: '生成报告',
         snapshotExport: '导出报告',
         sourceManagement: '来源管理',
@@ -5937,12 +6167,12 @@ ADMIN_HTML = r"""<!doctype html>
         smartRun: '开始检测',
         smartRestart: '重新检测',
         smartRunning: '检测中',
-        smartHint: '选择扫描范围后，检测对应 skills 是否正常。',
+        smartHint: '选择扫描范围后，只检测对应 skills 是否有新版本。',
         smartScope: '扫描范围',
         smartScopeAll: '全量扫描',
         smartScopePlatform: '按平台扫描',
         smartScopeImportance: '按等级扫描',
-        smartScopeAllDesc: '检查当前登记的全部 skills。',
+        smartScopeAllDesc: '检查当前登记的全部 skills 是否有更新。',
         smartScopePlatformDesc: '只检查某一个 Agent 平台。',
         smartScopeImportanceDesc: '优先检查重要、常规或其他等级。',
         smartScopeResult: '扫描范围',
@@ -5962,15 +6192,19 @@ ADMIN_HTML = r"""<!doctype html>
         smartProgressStage: '当前阶段',
         smartProgressUnknown: '准备中',
         smartProgressScopeValue: skills => `本次共检测 ${skills} 个 skills`,
-        smartDetecting: '正在检测所有 skills',
-        smartStepScan: '扫描本地 skills',
-        smartStepUsage: '刷新使用记录',
+        smartDetecting: '正在检测更新',
+        smartStepScan: '准备检测更新',
+        smartStepUsage: '准备检测更新',
         smartStepUpdate: '检测是否有更新',
-        smartStepHealth: '检测是否健康',
-        smartStepMetadata: '检测信息是否完整',
-        smartStepDuplicates: '检测是否有重复',
+        smartStepHealth: '检测是否有更新',
+        smartStepMetadata: '检测是否有更新',
+        smartStepDuplicates: '检测是否有更新',
         smartStepDone: '检测完成',
-        smartNoIssues: '没有发现需要处理的问题。',
+        smartNoIssues: '没有发现可更新版本。',
+        smartUpdateAll: '一键更新',
+        smartUpdateAllNone: '没有可执行的更新建议。',
+        smartUpdateAllConfirm: count => `确认一键更新 ${count} 个建议项吗？`,
+        smartUpdateAllDone: count => `已处理 ${count} 个更新建议。`,
         smartRateLimitWarning: count => `GitHub 接口请求受限，本次有 ${count} 个 skill 的远程更新检查未完成。稍后再试，或启动服务前设置 GITHUB_TOKEN。`,
         adviceAction: '建议动作',
         adviceImpact: '影响范围',
@@ -5981,10 +6215,10 @@ ADMIN_HTML = r"""<!doctype html>
         adviceMediumRisk: '中。建议先确认影响的平台，再执行更新或统一版本。',
         adviceHighRisk: '高。删除会在备份后移除本地文件，需要二次确认。',
         actionUpdateAdvice: '检查更新',
-        actionUnifyAdvice: '检查/统一',
+        actionUnifyAdvice: '更新',
         actionDeactivateAdvice: '停用',
         actionDeleteAdvice: '删除',
-        actionDetailsAdvice: '查看详情',
+        actionDetailsAdvice: '详细信息',
         actionIgnoreAdvice: '忽略',
         exists: '存在',
         missing: '不存在',
@@ -6007,7 +6241,9 @@ ADMIN_HTML = r"""<!doctype html>
         rulePathExists: '路径存在',
         ruleSkillMd: 'Skill 目录包含 SKILL.md',
         ruleGithubHash: 'GitHub 来源包含 github_hash',
+        ruleDuplicateCopies: '列出重复安装的 skill 副本，供人工确认',
         ruleVersionKnown: '尽可能识别版本元数据',
+        ruleDescriptionKnown: '尽可能补充可读的介绍描述',
         ruleRemoteTracking: '远程托管能力包含更新追踪元数据',
         ruleBuiltinObserve: '内置/官方能力默认只观察，除非文件缺失或无法读取',
         snapshotDone: '导出快照完成',
@@ -6190,6 +6426,9 @@ ADMIN_HTML = r"""<!doctype html>
         'GitHub-backed items include github_hash': 'ruleGithubHash',
         'Version metadata is known when possible': 'ruleVersionKnown',
         'Remote-managed items include update tracking metadata': 'ruleRemoteTracking',
+        'Managed skills include version metadata when possible': 'ruleVersionKnown',
+        'Managed skills include a readable description when possible': 'ruleDescriptionKnown',
+        'Duplicate installed skill copies are listed for review': 'ruleDuplicateCopies',
         'Builtin/platform capabilities are observe-only unless files are missing or unreadable': 'ruleBuiltinObserve'
       };
       return t(map[rule]) || rule;
@@ -7044,11 +7283,7 @@ ADMIN_HTML = r"""<!doctype html>
     function smartStageKey(stage) {
       const map = {
         scan: 'smartStepScan',
-        usage: 'smartStepUsage',
         update: 'smartStepUpdate',
-        health: 'smartStepHealth',
-        metadata: 'smartStepMetadata',
-        duplicates: 'smartStepDuplicates',
         done: 'smartStepDone',
         canceled: 'smartCanceled',
         error: 'smartInterrupted'
@@ -7169,16 +7404,16 @@ ADMIN_HTML = r"""<!doctype html>
         }
         stopSmartPolling();
         stopLoadingDots();
-        if (job.status === 'done') {
-          smartActiveJobId = '';
-          currentSmartJob = null;
+      if (job.status === 'done') {
+        smartActiveJobId = '';
+        currentSmartJob = null;
           const res = await fetch('/api/state');
           const freshState = await res.json();
           state = freshState;
           applyI18n();
           fillFilters();
           render();
-          updateSmartJobFloat(state.smart_job || job);
+          updateSmartJobFloat(null);
           if (isSmartPanelOpen()) renderSmartUpgradeResult(job.result || {});
           return;
         }
@@ -7186,13 +7421,14 @@ ADMIN_HTML = r"""<!doctype html>
           smartActiveJobId = '';
           currentSmartJob = null;
           if (isSmartPanelOpen()) renderSmartUpgradeStart(false, 'smartCanceled');
-          updateSmartJobFloat(job);
+          updateSmartJobFloat(null);
           return;
         }
         if (job.status === 'error') {
           smartActiveJobId = '';
           currentSmartJob = null;
           if (isSmartPanelOpen()) renderSmartUpgradeStart(false, 'smartInterrupted', smartErrorDetail(job.error || ''));
+          updateSmartJobFloat(null);
         }
       } catch(e) {
         stopLoadingDots();
@@ -7221,7 +7457,7 @@ ADMIN_HTML = r"""<!doctype html>
         stopSmartPolling();
         stopLoadingDots();
         if (isSmartPanelOpen()) renderSmartUpgradeStart(false, 'smartCanceled');
-        updateSmartJobFloat(job);
+        updateSmartJobFloat(null);
       } catch(e) {
         toast(e.message);
       }
@@ -7230,23 +7466,12 @@ ADMIN_HTML = r"""<!doctype html>
       const el = $('smartJobFloat');
       if (!el) return;
       const current = job || state.smart_job || null;
-      if (!current || !current.status || isSmartPanelOpen()) {
+      if (!current || current.status !== 'running' || isSmartPanelOpen()) {
         el.classList.remove('show', 'done', 'error');
         return;
       }
-      const status = current.status;
-      if (!['running', 'done', 'error'].includes(status)) {
-        el.classList.remove('show', 'done', 'error');
-        return;
-      }
-      el.classList.toggle('done', status === 'done');
-      el.classList.toggle('error', status === 'error');
-      const titleKey = status === 'running'
-        ? 'smartFloatRunning'
-        : status === 'done'
-          ? 'smartFloatDone'
-          : 'smartFloatError';
-      $('smartJobFloatTitle').textContent = t(titleKey);
+      el.classList.remove('done', 'error');
+      $('smartJobFloatTitle').textContent = t('smartFloatRunning');
       $('smartJobFloatSub').textContent = smartProgressDetail(current) || smartStageLabel(current.stage);
       el.classList.add('show');
     }
@@ -7254,9 +7479,11 @@ ADMIN_HTML = r"""<!doctype html>
       return t(smartStageKey(stage));
     }
     function renderSmartUpgradeResult(data) {
-      const items = data.recommendations || [];
-      const counts = data.counts || {};
+      const items = (data.recommendations || []).filter(item => item.type === 'update');
       const scope = data.scope || {type: 'all'};
+      const updateTasks = items
+        .filter(item => item.type === 'update' && (item.ids || []).length)
+        .map(item => ({ids: item.ids || [], mode: recommendationUpdateMode(item)}));
       const rateLimited = (data.update_results || []).filter(item => {
         if (item.status === 'rate_limited') return true;
         return (item.remote_errors || []).some(error => error.status === 'rate_limited');
@@ -7264,19 +7491,14 @@ ADMIN_HTML = r"""<!doctype html>
       const rateLimitNotice = rateLimited
         ? `<div class="empty" style="margin-bottom:12px">${esc(t('smartRateLimitWarning')(rateLimited))}</div>`
         : '';
-      const metricItems = [
-        ['update', counts.update || 0],
-        ['health', counts.health || 0],
-        ['metadata', counts.metadata || 0],
-        ['review', counts.review || 0]
-      ];
+      const updateTasksData = encodeURIComponent(JSON.stringify(updateTasks));
       $('detailBody').innerHTML = `
-        <div class="empty" style="margin-bottom:12px; display:flex; align-items:center; justify-content:space-between; gap:12px">
+        <div class="empty smart-result-toolbar">
           <span>${esc(t('smartScopeResult'))}: ${esc(smartScopeLabel(scope))}</span>
-          <button onclick="renderSmartUpgradeStart(false, 'smartHint')">${esc(t('smartNewScan'))}</button>
-        </div>
-        <div class="metrics" style="grid-template-columns: repeat(4, minmax(90px, 1fr)); margin-bottom:12px">
-          ${metricItems.map(([key, value]) => `<div class="metric"><strong>${esc(value)}</strong><span>${esc(issueLabel(key))}</span></div>`).join('')}
+          <div class="smart-result-actions">
+            <button onclick="renderSmartUpgradeStart(false, 'smartHint')">${esc(t('smartNewScan'))}</button>
+            <button class="primary" ${updateTasks.length ? '' : 'disabled'} onclick="smartUpdateAll('${updateTasksData}')">${esc(t('smartUpdateAll'))}</button>
+          </div>
         </div>
         ${rateLimitNotice}
         <div class="choice-list">${items.map(item => recommendationCard(item)).join('') || `<div class="empty">${esc(t('smartNoIssues'))}</div>`}</div>`;
@@ -7292,20 +7514,28 @@ ADMIN_HTML = r"""<!doctype html>
       const platforms = (item.platforms || []).filter(Boolean).sort(comparePlatform).map(label).join(', ');
       const versions = (item.versions || []).filter(Boolean).join(', ') || 'unknown';
       const usage = Number(item.usage_30d || 0);
-      const impact = `${platforms || '-'} · ${esc(item.copy_count || ids.length)} ${t('adviceCopies')} · ${esc(t('adviceUsage30d'))}: ${esc(usage)}${lang === 'zh' ? '次' : ''}`;
-      const risk = item.severity === 'high' ? t('adviceHighRisk') : item.severity === 'medium' ? t('adviceMediumRisk') : t('adviceLowRisk');
+      const impact = `${platforms || '-'} · ${esc(item.copy_count || ids.length)} ${t('adviceCopies')}`;
+      const summary = [
+        `${t('adviceAction')}: ${recommendationActionName(item)}`,
+        `${t('version')}: ${versions}`,
+        impact,
+        `${t('adviceUsage30d')}: ${usage}${lang === 'zh' ? '次' : ''}`
+      ];
       return `
         <div class="recommendation-card" data-rec="${esc(ids.join('|'))}">
-          <div><strong>${esc(item.name)}</strong> <span class="pill">${esc(issueLabel(item.type))}</span></div>
-          <div class="recommendation-meta">
-            <span>${esc(t('adviceAction'))}</span><span>${esc(recommendationActionName(item))}</span>
-            <span>${esc(t('adviceReason'))}</span><span>${esc(recommendationReason(item))}</span>
-            <span>${esc(t('adviceImpact'))}</span><span>${impact}</span>
-            <span>${esc(t('version'))}</span><span>${esc(versions)}</span>
-            <span>${esc(t('adviceRisk'))}</span><span>${esc(risk)}</span>
+          <div class="recommendation-card-main">
+            <div class="recommendation-card-title"><strong>${esc(item.name)}</strong><span class="pill">${esc(issueLabel(item.type))}</span></div>
+            <div class="recommendation-summary">${summary.map(text => `<span>${esc(text)}</span>`).join('')}</div>
+            <div class="recommendation-reason" title="${esc(recommendationReason(item))}">${esc(recommendationReason(item))}</div>
           </div>
           <div class="recommendation-actions">${recommendationButtons(item)}</div>
         </div>`;
+    }
+    function recommendationUpdateMode(item) {
+      if (item.update_mode === 'remote' || item.update_mode === 'unify') return item.update_mode;
+      const reason = String(item.reason || '').toLowerCase();
+      if (reason.includes('local versions differ') || reason.includes('版本不一致')) return 'unify';
+      return 'remote';
     }
     function recommendationActionName(item) {
       if (item.type === 'update') return t('actionUnifyAdvice');
@@ -7320,7 +7550,7 @@ ADMIN_HTML = r"""<!doctype html>
       const idData = JSON.stringify(ids);
       const nameData = JSON.stringify(encodeURIComponent(item.name || ''));
       if (item.type === 'update') {
-        return `<button class="tiny primary" onclick='openRecommendationUpdate(${idData},${nameData})'>${esc(t('actionUnifyAdvice'))}</button><button class="tiny" onclick='showRecommendationDetailsData(${data})'>${esc(t('actionDetailsAdvice'))}</button><button class="tiny" onclick='ignoreRecommendation(${idData})'>${esc(t('actionIgnoreAdvice'))}</button>`;
+        return `<button class="tiny" onclick='showRecommendationDetailsData(${data})'>${esc(t('actionDetailsAdvice'))}</button><button class="tiny primary" onclick='openRecommendationUpdate(${idData},${nameData})'>${esc(t('actionUnifyAdvice'))}</button>`;
       }
       if (item.type === 'deactivate') {
         return `<button class="tiny primary" onclick='runRecommendation(${idData},"inactive")'>${esc(t('actionDeactivateAdvice'))}</button><button class="tiny" onclick='showRecommendationUsage(${idData})'>${esc(t('usage'))}</button><button class="tiny" onclick='ignoreRecommendation(${idData})'>${esc(t('actionIgnoreAdvice'))}</button>`;
@@ -7407,29 +7637,70 @@ ADMIN_HTML = r"""<!doctype html>
     }
     async function scan() { try { const d = await api('/api/scan'); toast(t('scanned')(d.count)); await load(); } catch(e) { toast(e.message); } }
     function refreshPage() { window.location.reload(); }
-    async function health() {
+    function health() {
       closeMoreMenus();
-      try {
-        const data = await api('/api/health');
-        const summary = data.summary || {};
-        const issues = data.issues || [];
-        $('detailTitle').textContent = t('healthResult');
-        $('detailBody').innerHTML = `
-          <div class="metrics" style="grid-template-columns: repeat(5, minmax(90px, 1fr)); margin-bottom:12px">
-            ${[['total', t('total')], ['ok', 'OK'], ['warning', t('warning')], ['missing', t('missing')], ['metadata_error', t('issueMetadata')]].map(([key, label]) => `
-              <div class="metric"><strong>${esc(summary[key] ?? 0)}</strong><span>${esc(label)}</span></div>`).join('')}
+      $('detailTitle').textContent = t('healthResult');
+      $('detailBody').innerHTML = `
+        <div class="smart-upgrade-panel">
+          <div class="smart-upgrade-hint">${esc(t('healthIntro'))}</div>
+          <div class="smart-upgrade-actions">
+            <button class="primary" onclick="runHealthCheck()">${esc(t('healthStart'))}</button>
           </div>
-          <div class="detail-grid">
-            <div class="detail-row"><div class="detail-label">${esc(t('healthRules'))}</div><div class="detail-value">${(data.rules || []).map(rule => `- ${esc(ruleLabel(rule))}`).join('<br>')}</div></div>
-            <div class="detail-row"><div class="detail-label">${esc(t('healthIssues'))}</div><div class="detail-value">${issues.length ? healthIssueTable(issues.slice(0, 80)) : esc(t('healthNoIssues'))}</div></div>
-          </div>`;
-        $('detailModal').classList.add('open');
-        updateDetailCloseButton();
+        </div>`;
+      $('detailModal').classList.add('open');
+      updateDetailCloseButton();
+    }
+    async function runHealthCheck() {
+      try {
+        showDetailLoadingMessage('healthChecking');
+        const data = await api('/api/health');
+        stopLoadingDots();
+        renderHealthResult(data);
         toast(t('healthDone'));
         await load();
       } catch(e) {
+        stopLoadingDots();
         toast(e.message);
       }
+    }
+    function renderHealthResult(data) {
+      const summary = data.summary || {};
+      const categories = data.categories || {};
+      const issues = data.issues || [];
+      const shownIssues = issues.slice(0, 120);
+      $('detailTitle').textContent = t('healthResult');
+      $('detailBody').innerHTML = `
+        <div class="health-report">
+          <div class="health-section">
+            <div class="health-section-title">${esc(t('healthOverview'))}</div>
+            <div class="metrics" style="grid-template-columns: repeat(4, minmax(90px, 1fr)); margin-bottom:12px">
+              ${[
+                ['total', t('total')],
+                ['ok', 'OK'],
+                ['warning', t('healthAffected')],
+                ['issues', t('healthIssueTotal')]
+              ].map(([key, label]) => `<div class="metric"><strong>${esc(summary[key] ?? 0)}</strong><span>${esc(label)}</span></div>`).join('')}
+            </div>
+            <div class="health-category-grid">
+              ${[
+                ['file', t('healthFileIssues')],
+                ['structure', t('healthStructureIssues')],
+                ['metadata', t('healthMetadataIssues')],
+                ['duplicate', t('healthDuplicateIssues')]
+              ].map(([key, label]) => `<div class="metric"><strong>${esc(categories[key] ?? 0)}</strong><span>${esc(label)}</span></div>`).join('')}
+            </div>
+          </div>
+          <div class="health-section">
+            <div class="health-section-title">${esc(t('healthCheckItems'))}</div>
+            <div class="health-rules">${(data.rules || []).map(rule => `<div class="health-rule">${esc(ruleLabel(rule))}</div>`).join('')}</div>
+          </div>
+          <div class="health-section">
+            <div class="health-section-title">${esc(t('healthIssueList'))}${issues.length ? ` · ${esc(t('healthShowTop')(shownIssues.length))}` : ''}</div>
+            ${issues.length ? `<div class="health-issue-list">${shownIssues.map(healthIssueCard).join('')}</div>` : `<div class="empty">${esc(t('healthNoIssues'))}</div>`}
+          </div>
+        </div>`;
+      $('detailModal').classList.add('open');
+      updateDetailCloseButton();
     }
     async function report() {
       closeMoreMenus();
@@ -7454,18 +7725,54 @@ ADMIN_HTML = r"""<!doctype html>
         toast(e.message);
       }
     }
-    function healthIssueTable(issues) {
+    function healthCategoryLabel(category) {
+      const map = { file: 'healthCatFile', structure: 'healthCatStructure', metadata: 'healthCatMetadata', duplicate: 'healthCatDuplicate' };
+      return t(map[category]) || category || '-';
+    }
+    function healthSeverityLabel(severity) {
+      const map = { high: 'severityHigh', medium: 'severityMedium', low: 'severityLow' };
+      return t(map[severity]) || severity || '-';
+    }
+    function healthMessage(item) {
+      const message = item.message || '';
+      if (message === 'path missing') return t('healthMsgPathMissing');
+      if (message === 'missing SKILL.md') return t('healthMsgMissingSkillMd');
+      if (message === 'missing github_hash') return t('healthMsgMissingGithubHash');
+      if (message === 'unknown version') return t('healthMsgUnknownVersion');
+      if (message === 'missing description') return t('healthMsgMissingDescription');
+      const match = message.match(/^(\\d+) installed copies detected$/);
+      if (match) return t('healthMsgDuplicateCopies')(match[1]);
+      return message;
+    }
+    function healthAction(item) {
+      const action = item.action || '';
+      if (action === 'remove missing entry or restore the folder') return t('healthActionRestorePath');
+      if (action === 'add SKILL.md or remove this folder from skill sources') return t('healthActionAddSkillMd');
+      if (action === 'run update check or add source tracking metadata') return t('healthActionUpdateMetadata');
+      if (action === 'add version metadata to SKILL.md') return t('healthActionAddVersion');
+      if (action === 'add a short description to SKILL.md') return t('healthActionAddDescription');
+      if (action === 'review duplicate copies and keep the intended one') return t('healthActionReviewDuplicates');
+      return action;
+    }
+    function healthIssueCard(item) {
+      const severity = item.severity || 'medium';
+      const path = item.path || '';
       return `
-        <table style="width:100%;border-collapse:collapse">
-          <thead><tr><th>${esc(t('platform'))}</th><th>${esc(t('name'))}</th><th>${esc(t('health'))}</th><th>${esc(t('details'))}</th></tr></thead>
-          <tbody>${issues.map(item => `
-            <tr>
-              <td>${esc(label(item.platform))}</td>
-              <td>${esc(item.name)}</td>
-              <td>${esc(label(item.health))}</td>
-              <td>${esc(item.message || '')}</td>
-            </tr>`).join('')}</tbody>
-        </table>`;
+        <div class="health-issue-card">
+          <div>
+            <div class="health-issue-title">
+              <span>${esc(item.name || '-')}</span>
+              <span class="pill">${esc(label(item.platform || ''))}</span>
+              <span class="pill">${esc(healthCategoryLabel(item.category))}</span>
+            </div>
+            <div class="health-issue-meta">
+              <div><strong>${esc(t('details'))}:</strong> ${esc(healthMessage(item))}</div>
+              <div><strong>${esc(t('healthRecommendedAction'))}:</strong> ${esc(healthAction(item))}</div>
+              ${path ? `<div class="health-issue-path"><strong>${esc(t('healthPath'))}:</strong> ${esc(path)}</div>` : ''}
+            </div>
+          </div>
+          <span class="health-severity health-severity-${esc(severity)}">${esc(healthSeverityLabel(severity))}</span>
+        </div>`;
     }
     async function setStatus(id, status) { try { await api('/api/status', {name: id, status}); toast(`${id} -> ${status}`); await load(); } catch(e) { toast(e.message); } }
     function actionLabel(action) {
@@ -7605,6 +7912,36 @@ ADMIN_HTML = r"""<!doctype html>
         stopLoadingDots();
         closeAction();
         toast(t('updated')(result.updated || 0));
+        await load();
+      } catch(e) {
+        stopLoadingDots();
+        toast(e.message);
+      }
+    }
+    async function smartUpdateAll(encodedTasks) {
+      let tasks = [];
+      try {
+        tasks = JSON.parse(decodeURIComponent(encodedTasks || '[]'));
+      } catch(e) {
+        toast(e.message);
+        return;
+      }
+      tasks = tasks.filter(task => Array.isArray(task.ids) && task.ids.length);
+      if (!tasks.length) {
+        toast(t('smartUpdateAllNone'));
+        return;
+      }
+      if (!confirm(t('smartUpdateAllConfirm')(tasks.length))) return;
+      let processed = 0;
+      try {
+        showLoadingMessage('updating');
+        for (const task of tasks) {
+          await api('/api/update-apply', {ids: task.ids, mode: task.mode || 'remote'});
+          processed += 1;
+        }
+        stopLoadingDots();
+        closeAction();
+        toast(t('smartUpdateAllDone')(processed));
         await load();
       } catch(e) {
         stopLoadingDots();
