@@ -1,0 +1,1486 @@
+{
+  "acb0aae6557ae95065a813e0eab34741f9408b2f71297531c74190f372a7b798": {
+    "name": "baoyu-electron-extract",
+    "text": "提取 Electron 应用资源和 JavaScript 源码"
+  },
+  "0513e0ff23b9d7144e5a94dda5945d82dd9c8f36042ec2ce46caa9cf83038313": {
+    "name": "baoyu-format-markdown",
+    "text": "整理 Markdown 的标题、格式和元数据"
+  },
+  "e2a8bc0d014851fb591a82bca93be57cc179edc8891752ee37375d01056dab45": {
+    "name": "baoyu-slide-deck",
+    "text": "把内容生成演示文稿图片"
+  },
+  "305ca3c85c1cb3bfb44a86dc8c351784ce5e54b3428ff80d79716a1d02cdea16": {
+    "name": "beautiful-html-templates",
+    "text": "用现成模板制作 HTML 演示文稿"
+  },
+  "7aa2e81dfc9e675a10bb2c14c6725d0387d75108a17a6351fad085ff341f8927": {
+    "name": "brainstorming",
+    "text": "讨论需求和设计，形成实现方案"
+  },
+  "080e0b1734990a7653d83e7e9a4e6976c7fff3e0f49ff4514dcf84a64b590e37": {
+    "name": "brand-guidelines",
+    "text": "应用 Anthropic 品牌配色与字体规范"
+  },
+  "7a0afdd2b108a92f8033eff8521fcbec6f0dacf0d514f59eafc9f877f51c9f02": {
+    "name": "clipforge-video",
+    "text": "从主题、商品或脚本制作竖屏短视频"
+  },
+  "9829429256a4f9eedf305279bf6c85cb2be0bfee9a2d6268bf6e1ebbf16b47b7": {
+    "name": "cmm-browser-bridge",
+    "text": "通过本地扩展和 CLI 操作 Chrome"
+  },
+  "0bf803dd94b03e0c6bcdc1874a941065d47a0f589d9f5e1b7d63978a162e632a": {
+    "name": "codex-voice-reply",
+    "text": "为 Agent 工作结果生成简短语音播报"
+  },
+  "ee1ff97ca9604afe2fb3f752ee25ffdb6eecdd4be5e4d6d576432990579c5ab9": {
+    "name": "content-strategy",
+    "text": "规划内容营销策略和执行节奏"
+  },
+  "0c0214c014a31ada069fc11796e8f0a6218b9f034faca58033e13cc565ed506b": {
+    "name": "content-to-obsidian",
+    "text": "在 Obsidian 管理内容项目和成品"
+  },
+  "449afffbbd53ff2a68bf08328a00c1226840a7123cc550ccc92e27937567d8e3": {
+    "name": "content-toolkit",
+    "text": "将内容任务分配给合适的制作工具"
+  },
+  "4976d2b559d53815c4cfe908ec3041453ef52572cf61446b94915175d6a0ce0b": {
+    "name": "context-engineering-advisor",
+    "text": "诊断和改进 AI 工作流的上下文组织"
+  },
+  "ed330b484be6a2d9f73308b6137c2a08e19c6b66220cc0ce8c6e983db3061862": {
+    "name": "course-factory",
+    "text": "编排多课时实操课程的制作与交付"
+  },
+  "12f0ae410c06b9ef51e0f5b3324ee6d96f57a9eac61052708d817e1c4d556795": {
+    "name": "cron-automation-manager",
+    "text": "管理定时任务、监控和提醒"
+  },
+  "102e7d840096c9d099ad77f2470a28836bb0b11d05dee71b457c5367f126232a": {
+    "name": "ctk-publish",
+    "text": "把已准备的内容发布到多个平台"
+  },
+  "87a2befe9e07dd7d3fb95c3f3246ecaf640ac1f26881f5be5748d0377761b899": {
+    "name": "design-system",
+    "text": "管理可复用的视觉设计规范"
+  },
+  "f99230c451327e31d69e329742cf1e7ace34c7bcfa5afff197d918cd395ecaeb": {
+    "name": "discovery-interview-prep",
+    "text": "规划用户探索访谈的目标与方法"
+  },
+  "daae79a349e089d6462e91f5a87670306955d345f93072cb5e07567f594741a0": {
+    "name": "discovery-process",
+    "text": "从问题假设推进到方案验证"
+  },
+  "1da6cad446358a3eaa97674492454fad6b20974efc81e0026034843f6b7c84a5": {
+    "name": "dispatching-parallel-agents",
+    "text": "把独立任务分配给多个 Agent"
+  },
+  "99fdbfeb7964cad472d3fd41967da95175362d7c364b2e2a1a36b4a4d0f401ee": {
+    "name": "docx",
+    "text": "创建、编辑和审查 Word 文档"
+  },
+  "6269362fd9ef26ef0d9a07d6d4e3f99229848cb7e01d13df2dec477456aeb76a": {
+    "name": "dogfood",
+    "text": "探索测试网页应用，收集问题与证据"
+  },
+  "5b6346fb760f38ec7ff63bdf99f0223fab7969672e3bde339a536850698f13cf": {
+    "name": "domain-hunter",
+    "text": "查询域名、比较价格和购买方案"
+  },
+  "46411769b4baba99b4bf410a94b44d19ab171dc1897740a2ae1bd04f66fb6e84": {
+    "name": "ecommerce-product-visuals",
+    "text": "根据商品素材制作电商图片组"
+  },
+  "70ad6755a3e4d59c8998eb9b5b02b6d9ef1c5de75409c558b95eb9856db25c45": {
+    "name": "edu-math-video",
+    "text": "把数学题做成讲解视频"
+  },
+  "3437b5e8316c492978d310cf46ef791a7ff9c3ff612cf3000fcd1e2af030d538": {
+    "name": "english-learning-materials",
+    "text": "制作英语词汇和单元复习海报"
+  },
+  "49a504d8ddaf3d391382e98b3ba5396b8aa890a6172173ee828ad9d1ee88ce98": {
+    "name": "eol-message",
+    "text": "编写产品或功能停止服务的公告"
+  },
+  "dc5cdd89810bb47891fed4207a9b9d92da5f0ae889d8d19ff3fbb6cb4c84efb6": {
+    "name": "epic-breakdown-advisor",
+    "text": "把大型需求拆成可交付的用户故事"
+  },
+  "add3e565884858cf71ecbea808105f9d06b426318005be482f28d0bbecbb2b51": {
+    "name": "exec-briefing-memo",
+    "text": "把复杂材料整理成一页决策简报"
+  },
+  "d77b4c1b47208fc25aa2d514981e6969f8dd2d63783f8574349ef3b13f82a90e": {
+    "name": "executing-plans",
+    "text": "按已确定计划分步执行并核对结果"
+  },
+  "ed5b6cfecdb81b8075a58481286401dd715cb6988a4791fc294236984ec7e4a5": {
+    "name": "executive-onboarding-playbook",
+    "text": "制定产品高管入职诊断计划"
+  },
+  "ff97a8785a826580c55b2966656c9a76979d734bce25a283bb11ab4fd3ab5375": {
+    "name": "feature-investment-advisor",
+    "text": "评估功能投入的收益、成本和价值"
+  },
+  "f0921fabec6e772f818695290694a63a2f6d67a55b9656b15de548b87d34a717": {
+    "name": "finance-based-pricing-advisor",
+    "text": "评估调价对收入与用户流失的影响"
+  },
+  "002272ef39c0bd8700bd1c614167830a15e219e118549e087879585451260c93": {
+    "name": "finance-metrics-quickref",
+    "text": "查询 SaaS 财务指标、公式和基准"
+  },
+  "affedc25900853e276e0a3aed1ab012d2ea58be100bf0ebf224abd9997b0f491": {
+    "name": "find-skills",
+    "text": "查找适合当前任务的 Agent Skills"
+  },
+  "05ede733a628e2b51f1e1f47fcfed1b40d9b4579342d303a0268b13233800f8f": {
+    "name": "finishing-a-development-branch",
+    "text": "完成开发分支并选择合并方式"
+  },
+  "f8dfdcf802c73ec277d53dba8ad05e8721a26fb58b8f71aecae79ce2e646f820": {
+    "name": "hyperframes-auto-editing-workflow",
+    "text": "生成和检查 HyperFrames 自动剪辑计划"
+  },
+  "3ae4e0aa6f6df2c3056cb5464aca8274408191b03a8d1122bb337a4926506a80": {
+    "name": "img2threejs",
+    "text": "把参考图片重建为可动画的 Three.js 模型"
+  },
+  "15244bc9f38443e9bf0266f14a7ebe29195e9ba0f28a63668d71b55cf2a709e1": {
+    "name": "interaction-design",
+    "text": "设计页面交互、组件状态和表单反馈"
+  },
+  "cdb288062e5155826fe8e0bed79dae3022322994ba9a073b92f62f3648834eb8": {
+    "name": "interview-designer",
+    "text": "分析简历并设计面试问题"
+  },
+  "3046fe781ef10573b5a113f73a9121d3e8e14d9eba2694b9c7d444e4b55d1a31": {
+    "name": "jobs-to-be-done",
+    "text": "梳理用户任务、痛点和期望收益"
+  },
+  "5abde19bf6aff4507a31b1b2c36f6cc62638dde0ea39de88994013285201cccd": {
+    "name": "json-canvas",
+    "text": "编辑由节点和连线组成的 JSON 画布"
+  },
+  "7dc6f0b9b53929d5789c437a28f138749da95ccba2f902cf4ab940c71f0aa3da": {
+    "name": "lark-shared",
+    "text": "配置飞书 CLI 登录、身份和权限"
+  },
+  "f596d6a344412a761931ddaa68783218236983ba961abdf266d7900b650a6482": {
+    "name": "lean-ux-canvas",
+    "text": "用 Lean UX 画布梳理问题和假设"
+  },
+  "602b5a019ff5f3ef21f01675cf892c062eb861c6754df26685e3d81ac7f1adfc": {
+    "name": "manage-skills",
+    "text": "通过 CLI 安装、更新和部署 Skills"
+  },
+  "fed81773f64176ea6092a8a16c8e5049336f561793c87f90e7c00174c559c7f8": {
+    "name": "mcp-builder",
+    "text": "构建连接外部服务的 MCP 服务器"
+  },
+  "d34c153bcae05343468a880e19ad2ea1807bf769fecf3add956dd43510923662": {
+    "name": "nanobanana",
+    "text": "使用 Gemini 生成和编辑图片"
+  },
+  "b21bd6b62a04c5a75c8f1d19a375196ba91d5a584a6ec3c17b198f81c1971ac2": {
+    "name": "neat-freak",
+    "text": "核对并整理项目文档与 Agent 记忆"
+  },
+  "bfeab7a333fd07fc31ffb3796bd7f75b05f5f630da86ca7808d554adaa4b36d3": {
+    "name": "neo-writing-style",
+    "text": "按 Neo 的风格编写和润色中文内容"
+  },
+  "0f5f854b62ba90e28fed9d54e8f3f55615d4e18eac5d9992f053b8621a1bf942": {
+    "name": "obsidian-bases",
+    "text": "编辑 Obsidian 数据视图、筛选和公式"
+  },
+  "797f413bae98aede455c1cc10a2d742dc39f43cbc97da5b626399a8f28ae7089": {
+    "name": "obsidian-cli",
+    "text": "通过 CLI 管理 Obsidian 笔记与任务"
+  },
+  "e2c5a2b7568d4b5bdc263b48f9777f144a1837770f5c4aa85de2bcfcfcfd516e": {
+    "name": "obsidian-markdown",
+    "text": "编辑 Obsidian 格式的 Markdown 笔记"
+  },
+  "613ef049518db3044c8e13110436b06e9202e3a3973d325d16e0f2da67285264": {
+    "name": "obsidian-ontology-sync",
+    "text": "同步 Obsidian 笔记与结构化知识图谱"
+  },
+  "1fd41311bd6d2376068f08e3589fc0fc1c75e1760609327894e1704abbcf9451": {
+    "name": "ontology",
+    "text": "创建和查询结构化知识图谱"
+  },
+  "818938523d4cc02e5acfbe78bea3a44553d5b51f47394ee1b8547dc4b0379896": {
+    "name": "opencode-controller",
+    "text": "通过命令管理 OpenCode 会话和模型"
+  },
+  "9b059197928c04fd38fd3227a3e1a205aaf22218744b313ef5616f4b9a3852ae": {
+    "name": "organic-growth-advisor",
+    "text": "评估自然增长的市场、渠道和产品路径"
+  },
+  "4c91e0cd3bb217ec4405e41d433e24fc5bc2a1a610890a9f715ec0ce24a1d7ab": {
+    "name": "paddleocr-doc-parsing",
+    "text": "识别文档中的文字、表格和版面结构"
+  },
+  "e0aeae6008eec1f51e605f01562f8ac6af8f090ca6c457e5be44da053a3f845f": {
+    "name": "paseo",
+    "text": "管理 Paseo 项目、工作区和 Agent"
+  },
+  "234c8c24fb93002710338190320270b457bb06c6f7cc5c9e91cd385387cc56e0": {
+    "name": "paseo-advisor",
+    "text": "让另一位 Agent 对当前任务提供建议"
+  },
+  "bcdf3f546848a384cebca0be08b2be32519788fbde5bd5d847b0390d49557e3a": {
+    "name": "paseo-committee",
+    "text": "组织两位 Agent 分析问题并制定方案"
+  },
+  "a52b567b2333e210106a01f504ca05e9bbe3a952c4df6fadb67223715c2d28cb": {
+    "name": "paseo-handoff",
+    "text": "将任务与上下文交接给其他 Agent"
+  },
+  "65654e37a6536af9b83374aa0915d3136b90884baa3f3e113c829fb5a15ccbe0": {
+    "name": "paseo-help",
+    "text": "查询 Paseo 的使用与配置说明"
+  },
+  "b38785b9c3a4dfa9c5631b27cf1f6dbc90501b9171703b23ec6f062815058396": {
+    "name": "paseo-plugin",
+    "text": "创建和管理本地 Paseo 插件"
+  },
+  "e80d584aa8392fc73c780a14a9a062aa45a0c0c8b8985bd5a3856242554b43f2": {
+    "name": "pestel-analysis",
+    "text": "分析影响市场的政治、经济和社会因素"
+  },
+  "e780ec07b69f4f1a95b2d1fdcc360075d100d0e7d9861436f448ca9c8071a53b": {
+    "name": "playwright",
+    "text": "自动操作浏览器，检查页面与交互"
+  },
+  "a0bc54f8c3d5b0d3755e73b8fb4d6f7008b32caaae2d5485afa45505438af584": {
+    "name": "pm-skill-creator",
+    "text": "把产品管理材料整理成规范的 Skill"
+  },
+  "92d8bae3526fa81ec10d0cf91ba8bcd048d87e3969e202ed43266c2fdfdb8241": {
+    "name": "pol-probe-advisor",
+    "text": "根据假设与风险选择早期验证方法"
+  },
+  "61f4a019d0d84320b30e86a5cb558fc8c4d6c0636bf7c2f5237d57a35c86cc06": {
+    "name": "positioning-statement",
+    "text": "明确目标客户、产品价值和差异"
+  },
+  "299bce34ff48abf34f1bbd81700eed105b36dc84ac4dd18111d80810bffad71e": {
+    "name": "positioning-workshop",
+    "text": "通过工作坊梳理产品定位"
+  },
+  "3f88b8c9a79bf54c0ad8bde2b7bc7f0c25a2c024f0f30d036e938040b5d18a03": {
+    "name": "ppt-final-check",
+    "text": "核对 PPT 交付包的内容与质量"
+  },
+  "97d0f5194fd9f5412172920e09998e5fd9b134a1950989352d860dfd0843307a": {
+    "name": "ppt-slide-writing",
+    "text": "把 PPT 需求整理成逐页内容"
+  },
+  "cddd528af12e5d50b0a8a1788f31a558e36692262c2409ce0c0ee42f2f641c7d": {
+    "name": "press-release",
+    "text": "用新闻稿明确新产品的客户价值"
+  },
+  "2b98e8f9b5fa1ff14debbca349d15babbe245ba32524b54fd923de55ad73e85e": {
+    "name": "prioritization-advisor",
+    "text": "选择适合当前团队的优先级方法"
+  },
+  "5dcae422bfa15640db366eadfa86f238fa74abbfcdb515c4bc93d08ae793f4a9": {
+    "name": "prioritize-features",
+    "text": "按价值、成本和风险排序功能"
+  },
+  "2efc0eb600003159d3707b41fd8aeecfd9517f8498c66065a6a26ba811c91bb5": {
+    "name": "problem-framing-canvas",
+    "text": "用画布明确问题和分析边界"
+  },
+  "ba4b010fd46dfef774b416d3f0cea311129045e1f77d43fa4bd491e18eeec817": {
+    "name": "seedance-video",
+    "text": "使用 Seedance 从文字或图片生成视频"
+  },
+  "2c3ce0a36a09a349bcb73f4ca584a461cf1729d9bd06d35e0e12df6ce81e0702": {
+    "name": "seo-content-writer",
+    "text": "编写适合搜索引擎收录的内容"
+  },
+  "91e1749a90a26095aedc6bc7d96feef0b8d1189bf30c651e3b15a66421e7ccf2": {
+    "name": "session-logs",
+    "text": "搜索和分析历史会话日志"
+  },
+  "92d6fa0619f24da1083923fd1a28bb5e3b5de12d12091f24aff31d9c43c6bbf4": {
+    "name": "skill-authoring-workflow",
+    "text": "把产品管理材料制作成可发布的 Skill"
+  },
+  "0bcc8baae86f69cfab6d6cd71f86ec3c0acde6973af09d9a801e9893e87a68b9": {
+    "name": "slack-gif-creator",
+    "text": "制作适合 Slack 使用的动画 GIF"
+  },
+  "9cf1f64cd541cfe16ff3928eff97ee6abeb0a7ea3e42ba508b0278395733faf1": {
+    "name": "stakeholder-engagement-advisor",
+    "text": "制定具体利益相关方的沟通策略"
+  },
+  "f19773e0840e772913a4f62addd580c609a94798b9161ecd67194cb2bf73cf48": {
+    "name": "stakeholder-identification",
+    "text": "识别项目的利益相关方"
+  },
+  "7e6a4d7f147d5e1197aab9542b7149fab526cbdc4d7784ad29be046d49a3b28a": {
+    "name": "stakeholder-mapping",
+    "text": "整理利益相关方的影响力与优先级"
+  },
+  "00f9d0e03712a626676218a461cbe7b6480f4ed5e87320798ab3fc6da3c2aacf": {
+    "name": "storyboard",
+    "text": "用六格故事板呈现用户从问题到解决方案"
+  },
+  "b1ef674422478424b8bfa754c73254464a0b7aaf0a9967b40ae60461cd85abea": {
+    "name": "subagent-driven-development",
+    "text": "组织多个 Agent 执行独立开发任务"
+  },
+  "fa4eab5ffdb29875fb97acd6163033b5980b44d75ca876319b9f4dec4577d952": {
+    "name": "systematic-debugging",
+    "text": "系统排查程序错误和异常行为"
+  },
+  "03b2442919750b873a1a7c93499c8b41d4d76a162a5f0b07c42bb8db48de0ed6": {
+    "name": "tam-sam-som-calculator",
+    "text": "估算市场规模并列出计算假设"
+  },
+  "83c0ef18678be170216c2a6a918147427ed070df64fad0b5c7aaa5b70a81821d": {
+    "name": "tariff-calculator-amazon",
+    "text": "计算跨境关税、税费和到岸成本"
+  },
+  "9f960aaea72f9cfcf48e979a01bdc44046c1ed3833a9d580a7c96392d096cfc5": {
+    "name": "test-driven-development",
+    "text": "先定义验证，再实现功能或修复"
+  },
+  "af4ce93d3eff899ba38147d9145336f4a14edc8edd3082cdeba25a873d26e23c": {
+    "name": "theme-factory",
+    "text": "为文档、演示和网页应用视觉主题"
+  },
+  "ca3037bf0d418c863c41e6addc2b4e4f6f1eeb499e914e2a379d7babf38b0a8c": {
+    "name": "tiktok-shop-cross-border",
+    "text": "规划 TikTok Shop 跨境销售"
+  },
+  "f7c661d433ea5f5db5c387d5b17d0307f2872e7a5fd5c2c70ec244c8ec716adb": {
+    "name": "tiktok-shop-product-research",
+    "text": "研究 TikTok Shop 商品和创作者需求"
+  },
+  "52f5ce2430045fa39782550088d95f744d97cf4649d2cd45095b2091fed80bb4": {
+    "name": "tiktok-shop-trending-products",
+    "text": "发现 TikTok 热门商品和趋势"
+  },
+  "b52615ad5de2461d5bbee4cd166b06f5fce7e7559fc39ee6d3dd927d94834bf5": {
+    "name": "tmux",
+    "text": "远程操作 tmux 中的交互命令行"
+  },
+  "49d6a3797bffa01e3285c4abf3a4a9cc65c357daa04e1cf2f63ed5529036e53a": {
+    "name": "twitter",
+    "text": "搜索和读取 X 用户、帖子与趋势"
+  },
+  "d70fec82198a92d9b7ee5d7de6e496135aa59994b5d08dab2b95fd9a0ee20cb7": {
+    "name": "ui-ux-pro-max",
+    "text": "设计和实现 UI 界面与用户体验"
+  },
+  "b50589eebde38c21c727dfd3763a978427661a990e3a6bf9d3043ca84ae99624": {
+    "name": "user-stories",
+    "text": "编写含验收条件的用户故事"
+  },
+  "ad1f0951a6ab006abaf63318219f5a0bd224d8867ea73c898201eb2d3625e54c": {
+    "name": "user-story",
+    "text": "把用户需求写成可开发的用户故事"
+  },
+  "b4a0f9d305a4d5ce3a9726d48d398a400f2b491c21f0385575d31afb96802480": {
+    "name": "user-story-mapping",
+    "text": "梳理用户故事地图和发布范围"
+  },
+  "0024d9cece9385dd43218339b200b47c2cacb00d16a74a5d7e81c51d858ba3a9": {
+    "name": "user-story-mapping-workshop",
+    "text": "通过工作坊规划用户故事地图"
+  },
+  "3600b83736d92252edd3bd2ac6c2795b58234e65e9c84b8867f3bbb41c00f744": {
+    "name": "user-story-splitting",
+    "text": "把较大需求拆成可交付的故事"
+  },
+  "562a57b2903b46983386fba3634e7535a193518ec60b89a6e06ae313aead98e8": {
+    "name": "using-git-worktrees",
+    "text": "为开发任务创建和使用隔离工作区"
+  },
+  "7c7d71a5fb301a03af0679d38e6076d538ea8b39b73a64ce1d421229d27ddae3": {
+    "name": "using-superpowers",
+    "text": "查找和使用 Superpowers 工作流"
+  },
+  "dadd027cba25a8f57ebec7eb4a863e54a625d7b938cd6aefa61b17fc202e4afb": {
+    "name": "verification-before-completion",
+    "text": "在宣告完成前执行验证并核对证据"
+  },
+  "8d5f0e118db83e78c89cb8a458f70f50c768aa85138ad14a2721c256118e38c5": {
+    "name": "vfx-text-cursor",
+    "text": "制作文字逐字出现的光迹特效"
+  },
+  "2f2e8a3e114b18f3156796042e110f906b6511d4c71d3c378b7ba97cb49b9d02": {
+    "name": "vfx-text-cursor",
+    "text": "制作文字逐字出现的光迹特效"
+  },
+  "50a78553a69967655fe73c3d160ba70e77141cf76dfcf914bc46c2eaae50e22c": {
+    "name": "video-frames",
+    "text": "从视频提取图片帧或短片段"
+  },
+  "712268e3d9384515f5fb056bc1940602b09b1fe1848279c6920a2b10b68b14fc": {
+    "name": "video-podcast-maker",
+    "text": "从主题制作配音讲解或知识视频"
+  },
+  "39ef4bb653071dadb5cef8c83dc0c315763729379117b86b478a887c6be42288": {
+    "name": "video-production",
+    "text": "规划可编程和自动化视频制作流程"
+  },
+  "29ba3fa7ffbb4c4c6bce025a1984ed8b703ed5a0b9fff9affcec3c88b20cba70": {
+    "name": "visual-system",
+    "text": "提炼和应用可复用的视觉设计体系"
+  },
+  "675dfe7b343e4a5ddfde74625bccbb63719341b464d345602a797b47506f40a5": {
+    "name": "visualize-floorplans",
+    "text": "根据平面图制作可编辑的 2D/3D 装修工作台"
+  },
+  "9a2a567f9db98d1480f81cc16d9b5c8f33fe33111aa985fc386a900eb600fe27": {
+    "name": "vp-cpo-readiness-advisor",
+    "text": "评估转向产品高管岗位的准备程度"
+  },
+  "da2b1380288e33b9dd9f6cbeca879227f22e41120d39edcf41bbb82d4e8380f3": {
+    "name": "workshop-facilitation",
+    "text": "分步引导工作坊并记录进度"
+  },
+  "cbb45d0dc982c85acc4ef552b5ba181f1e2d9317ae66d68792fd2aa55d85725b": {
+    "name": "writing-plans",
+    "text": "把需求写成多步骤实施计划"
+  },
+  "c7a6e14905813f74ac4da8d2bc7e98192614ab4fd51b45b3dc5fd0156f0a3063": {
+    "name": "writing-skills",
+    "text": "创建、编辑和验证 Agent Skills"
+  },
+  "b5eb6edd1ff677ecadbe13c12f2fd8365462f91ec63d4d4fa7994e8ec251926c": {
+    "name": "xlsx",
+    "text": "创建、编辑和分析 Excel 与 CSV"
+  },
+  "7e6eea99dfe7ba8b6d3085ae42fafbc46df18222ccd8295872159d2fd4f39362": {
+    "name": "agent-browser-verify",
+    "text": "用浏览器核对开发页面和控制台错误"
+  },
+  "b6274c46bf0ffc3f9877b39e4a1863803be0e351d86df2679896aa2ae0647608": {
+    "name": "ai-elements",
+    "text": "使用 AI Elements 构建 AI 交互组件"
+  },
+  "783b6865c869f2c317f0cfb4e8e05277a4319a269b55abb7bab23660afd9a64d": {
+    "name": "ai-gateway",
+    "text": "配置 Vercel 模型路由、切换和成本追踪"
+  },
+  "abbd93d3481b15bd28587cc8528bc4e778a9365b6b13526d208fd42e6ffffe86": {
+    "name": "ai-gateway",
+    "text": "配置 Vercel 模型路由、切换和成本追踪"
+  },
+  "10ee9aa51fa4a27e80da2145fab9fbd24725231c2bb14b756bd23dff82c4e5df": {
+    "name": "ai-sdk",
+    "text": "使用 Vercel AI SDK 构建 AI 功能"
+  },
+  "b5f4228d9cfd584feafad96f08733509335e31998ca3757821a7a6e59ba2499f": {
+    "name": "analyze-data-quality",
+    "text": "检查数据的新鲜度、缺失和可信度"
+  },
+  "d5149b7a613cb4531515f7e6b563e6e416d0487698b697c44b83a67ee2f33775": {
+    "name": "asset-import",
+    "text": "在 ChatCut 导入或重新关联媒体素材"
+  },
+  "d301bc86ad7bad5a8589514423c9bbf729162e52afc2863ec827e480541d3ce6": {
+    "name": "auth",
+    "text": "接入应用登录和身份验证"
+  },
+  "a5a1bcf71047a31909ba7715d249889392772c5c8535207b3254c46dfaa4be0a": {
+    "name": "auth",
+    "text": "接入应用登录和身份验证"
+  },
+  "430172000a3fb5c9c57a86a9eb5a641f3de880798b3b22ba6d66f59058cedd64": {
+    "name": "build-agents",
+    "text": "设计和构建可调用工具的 AI Agent"
+  },
+  "7cca3d7388c2ea4f4381b0ad7c2f027e18f7ab51fd794dd9bd452c1d5ed99ac6": {
+    "name": "build-report",
+    "text": "制作有证据支撑的分析报告"
+  },
+  "27b99708295c382b7b1e794878fca6ef3c9328f9bb96ebf00b834a46b984187f": {
+    "name": "chat-sdk",
+    "text": "使用 Vercel Chat SDK 构建多平台聊天机器人"
+  },
+  "eb8249c16732ac593ad3fa0719047df4935ddf024cac4ea9ed38ffb07785a65c": {
+    "name": "chatcut-plugin-basics",
+    "text": "配置并使用 ChatCut 视频编辑插件"
+  },
+  "6f60bd0abfb9b1d688b293750c06618ef20080e3e535f3ecb4e897d402884896": {
+    "name": "chronicle",
+    "text": "查看屏幕及近期工作历史"
+  },
+  "5e62575d88a212b50530127e0c6c416143e48c05369ee651a0b234c4a0ff49be": {
+    "name": "cms",
+    "text": "接入无头 CMS 并管理内容模型"
+  },
+  "2cc5b9e73c425a73f2f58299f4418228d7351620a6d93f2c99cdf8bda41e2937": {
+    "name": "convert-to-doc",
+    "text": "把现有数据应用转换为文档"
+  },
+  "97eb22cdb82d779d7e530ee69f11c55c35b0564f56da102632734fc28713e563": {
+    "name": "cowart-image-edit",
+    "text": "按 Cowart 图片批注生成修改结果"
+  },
+  "209b33ddbe313a97fbfe5b9a10a716d473e851f1d4efb831ea5e83761397755e": {
+    "name": "cowart-image-gen",
+    "text": "为 Cowart 画布生成 AI 图片"
+  },
+  "7ba8f7716db2738d66bb0eeedd66eb8fb6e8d42cd5bcf7b0702e5d4af4b35b39": {
+    "name": "cowart-open-canvas",
+    "text": "打开 Cowart 无限画布"
+  },
+  "a0c1a9dc13cd7d641c333d059e7947e62a803a2cd2a80f26a662c69a9064e12a": {
+    "name": "create-a-backend",
+    "text": "规划和构建应用后端"
+  },
+  "981425847471eadb965616bae502337a4325f9a2e4a32595717f0d32a23259c8": {
+    "name": "create-motion-graphics",
+    "text": "在 ChatCut 制作动态图形素材"
+  },
+  "69c13654f8fb877f34b97b316008571ec3489ad44b881c8e82c24688f73f5991": {
+    "name": "create-pet",
+    "text": "创建和预览 ChatGPT 动画宠物"
+  },
+  "f3b4c4bcb4ae086317370c60e4185ea00a52ece93580c60fc246882887c7eb13": {
+    "name": "cron-jobs",
+    "text": "配置 Vercel 定时任务"
+  },
+  "e38a5c07c5aa6b710867c06a51091728a6d7cd97af1a79569ce653873e4daea2": {
+    "name": "custom-metrics",
+    "text": "记录和查询 Vercel 自定义指标"
+  },
+  "1feebb42e6e2f0367810e3ef3a7fcd1f114d98e3c543f6488a33bd94cf114f68": {
+    "name": "deployments-cicd",
+    "text": "管理 Vercel 部署与持续交付"
+  },
+  "e2574dcc1f5986cd83aa8652dc9c05c5522124577ab6764fd03cc728bfde43fd": {
+    "name": "executing-plans",
+    "text": "按已确定计划分步执行并核对结果"
+  },
+  "ea2a132b71628dc6ff2b8eefa40299404f13b482a28341785273c13d250b9262": {
+    "name": "finishing-a-development-branch",
+    "text": "完成开发分支并选择合并方式"
+  },
+  "e71b7e8d15c8f258890b72b5ce3379a0936159bf7ca7a178bae21d2d93deda24": {
+    "name": "queues",
+    "text": "使用 Vercel 队列处理持久化任务"
+  },
+  "7a1e1df8451c7704c330c17b889a2899f3d0f31fb547db15b4ff74c97bbe636e": {
+    "name": "react-best-practices",
+    "text": "检查 React 组件、Hooks 和性能问题"
+  },
+  "858ae4c03cfcedb38a1364c7845c246e59c458a18d697cb4eeabd783017687b7": {
+    "name": "research",
+    "text": "研究数字产品的用户体验问题"
+  },
+  "b0dc0066907c5128a9ec24e4b60109aa5df7c2a36d9a08c2209908ea52979683": {
+    "name": "review-agent",
+    "text": "只读审查代码变更并列出缺陷"
+  },
+  "3262a463e8e31a86a77c0a367f517c77f061a5721a0d35a5fc6f45940fe243b4": {
+    "name": "routing-middleware",
+    "text": "配置请求拦截、重定向和重写"
+  },
+  "5e453d620e4a2b4f739b4b5b08a7e69e0ad766fce386a9bb82d6297223ece9f9": {
+    "name": "satori",
+    "text": "将 HTML 与 CSS 转换为 SVG"
+  },
+  "591f3a46daf94f4dc538c9fd4943d272c11fe313d693122f21bf650a4352b246": {
+    "name": "shadcn",
+    "text": "使用 shadcn/ui 构建和调整界面组件"
+  },
+  "77bdac1cb8353f8ec4d4b250edd87d7011db03a33a4c5c075e7645fe1eabaa35": {
+    "name": "shader-gen",
+    "text": "为视频制作 WebGL 特效和调色"
+  },
+  "397a84349246858a164b1d4650813c55861acc0803a599e96b5ca2da5edca926": {
+    "name": "share",
+    "text": "部署并分享可运行的原型"
+  },
+  "8ee57261eb1bf444427bbddae7037e073222c19628ba3147e19ed525e83699b9": {
+    "name": "sign-in-with-vercel",
+    "text": "用 Vercel 账号实现登录"
+  },
+  "cb2d6aa21f345f61738c2c563e33de649f62362a6f87a9feac03f5e493648966": {
+    "name": "slack-channel-summarization",
+    "text": "整理 Slack 频道活动摘要"
+  },
+  "58e1cee31f1e07d339cdfd20fb010376515164a96423e8492230b9866a1d354e": {
+    "name": "slack-daily-digest",
+    "text": "制作每日 Slack 消息摘要"
+  },
+  "e13909829fd8282dfc8508e0482f297bfb8284187c5794cf20f4eae84ed2ea1b": {
+    "name": "slack-notification-triage",
+    "text": "把 Slack 活动整理成优先事项"
+  },
+  "08b6ea355b0a3d3efcefd211b982602567f6ae60613d6684310d692b97035c89": {
+    "name": "slack-outgoing-message",
+    "text": "编写和修改准备发送的 Slack 消息"
+  },
+  "3e74bc3e9408ea74d7e9b466bb43d0a59eb748bfa6712e5aac2c4ef321607215": {
+    "name": "slack-reply-drafting",
+    "text": "根据上下文起草 Slack 回复"
+  },
+  "5f540266abd011a9b5dc6295f8d20dc49ae94b4a2c81e133e5c040b94fc75ca6": {
+    "name": "source-command-draft-nda",
+    "text": "起草双方保密协议"
+  },
+  "7659f97426acdef5dd1430d1ce5747fb2656c7ed2cffc7c6d399728ac22e13cb": {
+    "name": "source-command-market-product",
+    "text": "构思产品定位、名称和营销方案"
+  },
+  "765b40d658a6d1e23803d57ba2a245138e35e5965ac308e21f6512014a9e9d9a": {
+    "name": "source-command-privacy-policy",
+    "text": "起草数据收集与使用的隐私政策"
+  },
+  "7748dd4b77a59824c2387fdcff994fcf5c7f094251edb2567e3defd1c6750ed4": {
+    "name": "source-command-proofread",
+    "text": "检查文字语法、逻辑和表达"
+  },
+  "c8e0f64f268730d2f9658a193c018e1fb0b1a1b6850649b3c9bb09f1057a64e8": {
+    "name": "source-command-review-resume",
+    "text": "审查产品经理简历并提出改进"
+  },
+  "662597210951e99fe0b98df292d86bb84efcdbe6524e6314aa01c36e901dab59": {
+    "name": "source-command-tailor-resume",
+    "text": "针对岗位要求调整产品经理简历"
+  },
+  "ae468734a6aae57a3da343799ac7580532beb38212e3724854029322d2c6ae2d": {
+    "name": "source-command-value-proposition",
+    "text": "梳理产品价值主张和替代方案"
+  },
+  "159860a51ecef9c5982876beb0f2d83f357abe162713f0dfe551b43e276df0ec": {
+    "name": "source-command-write-query",
+    "text": "把自然语言需求转换为 SQL 查询"
+  },
+  "c7a2d43248c6574bdb2534df60b3774bb57cf98379345b1dd6c140905ad0636c": {
+    "name": "supabase",
+    "text": "使用 Supabase 的数据库、认证与存储"
+  },
+  "9b8509c866304dd7d9f993dcd8eac9f923b4152088afdab804e332566a0b3e15": {
+    "name": "swr",
+    "text": "为 React 配置数据读取、缓存与更新"
+  },
+  "ba90cb04c2a7596919ee17abe59e751af4e318eb77e8f487cfaac3755b506f3b": {
+    "name": "talking-head-guide",
+    "text": "剪辑由口播或对话驱动的视频"
+  },
+  "6a1d3acd8175fe68461d1cc584154faf06f0796c37001b16388fe33459a285e3": {
+    "name": "template-creator",
+    "text": "创建和更新可复用的文档模板 Skill"
+  },
+  "c33c4e130070c1d7d38f4dfc014f22630d8f0d0a6670da73296d50b78a1a045b": {
+    "name": "transcription",
+    "text": "通过 ChatCut 转写音视频"
+  },
+  "fc2061c06cc5501e2d5ad0c8018c7a96c2d2473220cce74749b7d1f02b31f50e": {
+    "name": "turbopack",
+    "text": "配置 Next.js 打包器并排查构建问题"
+  },
+  "65af8a0bebbda4d36ba49388b5e92dc0be1cf058a82e58a1d9abd4a837ea1fc6": {
+    "name": "turborepo",
+    "text": "管理多项目构建、缓存和任务执行"
+  },
+  "c422ce220fdba15f2ba7b726fb7e3a377fd0b41c5e35240ff4c0b9a3ac05f796": {
+    "name": "typesafe-ai",
+    "text": "使用 TypeSafe 构建小型 AI 功能"
+  },
+  "bb61abfa8ef27bd91968e394970b68d262ced8433de893c80ea1a31e1333b33c": {
+    "name": "update-pet",
+    "text": "检查和更新 ChatGPT 自定义宠物"
+  },
+  "9b9f8140931a039e38be54bcf0e3cdbf9d8ba3b0ad0fba87eddc5cdcb7c0d71f": {
+    "name": "user-context",
+    "text": "管理 Product Design 的用户背景和资料"
+  },
+  "537923081392f0487007d517d9abf6406633f59dcd2f35f3ca38bd9928b4e468": {
+    "name": "using-superpowers",
+    "text": "查找和使用 Superpowers 工作流"
+  },
+  "e1103beab1de6de5294a009ae553a889b5284ccc7979ce3e8ece34efa47b7aa9": {
+    "name": "v0-dev",
+    "text": "使用 v0 生成界面和接入应用"
+  },
+  "1bb63bc3c7d49b924dd35aa814944bff6357c9d316653f962534773a766ded1f": {
+    "name": "vercel-cli",
+    "text": "通过 CLI 管理 Vercel 项目与部署"
+  },
+  "e8fb48554b3f110744419eeb8d56469f1b42925fb4b40491d8fac968dc66f62b": {
+    "name": "vercel-cli",
+    "text": "通过 CLI 管理 Vercel 项目与部署"
+  },
+  "cc695c035dffbe0c4a3bf4b39535242208ad810ba059f1fbc1e132c62bb8d091": {
+    "name": "vercel-cli",
+    "text": "通过 CLI 管理 Vercel 项目与部署"
+  },
+  "699f581507929fa486f2d49e8e2b215ddba60152a05af6f1c1e0c8efcd871c6c": {
+    "name": "vercel-connect",
+    "text": "为应用接入第三方服务的访问凭证"
+  },
+  "9999b1b255026154c7848ba733751ef2700d6ed77664a023676af17e87044232": {
+    "name": "vercel-connect",
+    "text": "为应用接入第三方服务的访问凭证"
+  },
+  "15e73249760314aef592090b2500ffd31de833672948f4ca3b0149e05757bcc8": {
+    "name": "vercel-firewall",
+    "text": "配置 Vercel 防火墙和访问防护"
+  },
+  "6b2a9481f1dcd8d0e6d259473103677f8b16449f4bac575c93cd65d1b9dce19c": {
+    "name": "vercel-firewall",
+    "text": "配置 Vercel 防火墙和访问防护"
+  },
+  "6c6ca1241de43f016194b1c49149e536d6e168fca49d712fd4770ca0fd37562e": {
+    "name": "vercel-functions",
+    "text": "配置和排查 Vercel 函数运行"
+  },
+  "1017899295fc298f935487506504d46ebe89aa1222d9a547e74eceb403b4a13e": {
+    "name": "vercel-functions",
+    "text": "配置和排查 Vercel 函数运行"
+  },
+  "4c416eefc001d81d48e5cb56f75261a941e7106ea67a8b118876edb54378a541": {
+    "name": "vercel-sandbox",
+    "text": "使用隔离微虚拟机运行代码"
+  },
+  "a11b179b43cb8df69b788096f581bde6ddfbff2af86e713fa2a7cdb6a8d40167": {
+    "name": "vercel-storage",
+    "text": "选择和配置 Vercel 存储方案"
+  },
+  "e09b59123a735e1f11eb0ce35d08f74aac4317107494a1aa84e94b667c7b518e": {
+    "name": "vercel-storage",
+    "text": "选择和配置 Vercel 存储方案"
+  },
+  "bce2b7e8b8e99975d5295eb829d2b779dad4f8eb26a64b6154db39916f6143ba": {
+    "name": "verification",
+    "text": "验证 ChatCut 视频编辑的结果"
+  },
+  "a8b7fe6651a1a5db041cdc14b98100e21a958c705d71371f85c4a1f07e4a47a9": {
+    "name": "verification",
+    "text": "验证 ChatCut 视频编辑的结果"
+  },
+  "7244bc85075e1e48c036c2018d7e9bfd1e4866d7f48b36adc7ea71f3866a0d7d": {
+    "name": "video-translation",
+    "text": "翻译、配音和本地化视频"
+  },
+  "321b25f4c4e13740c174d31c6607d101b1581de332964a37c0c0601a6aa2960d": {
+    "name": "visualize",
+    "text": "制作可交互的图表与演示工具"
+  },
+  "a671991550b0e8be91993496b4373a3c40400318cd5e3870d8425bf0b1d09771": {
+    "name": "website-to-hyperframes",
+    "text": "把网页录制成 HyperFrames 视频"
+  },
+  "d0b12a9a28e71ded8c073d5d19c326327f339504a4d4950fa73f1eaffcf5b688": {
+    "name": "widget-forms",
+    "text": "通过表单收集 ChatCut 所需输入"
+  },
+  "5476b1345fa746d8ab8e9881cc83727a4718c76a02296ee521971331ad553d38": {
+    "name": "write-page",
+    "text": "创建或编辑 Page 与 Space 内容"
+  },
+  "c9b3ff8410ccc1109513d9df1ee880c8b650dc9a3eb038b98fb475a905d099af": {
+    "name": "ascii-art",
+    "text": "制作字符画和文字图形"
+  },
+  "ebf08f7d339d926450ee4345eefe9bba852e9f7681e42ffb44950f4080e3cc15": {
+    "name": "blocked-page-recovery",
+    "text": "处理网页被限流或访问受阻的问题"
+  },
+  "d04149c93b37d8a0cfd5fcc737375e6cbfcb963133c439de9e339b4d9b25f7f4": {
+    "name": "box",
+    "text": "管理 Box 云端文件、分享和元数据"
+  },
+  "a734d117347901130bc8eea2657f62b652f57c07fe10bb045f415a7d613eed8d": {
+    "name": "competitor-news-monitor",
+    "text": "监控指定公司新闻并整理来源"
+  },
+  "e311c0ac22179268acc8cc5fa8ef0fd8e1f99b3f13da2e50f6a227b3c645999f": {
+    "name": "document-to-action-items",
+    "text": "从文档提取义务、期限和待办"
+  },
+  "cfc3eb97e835bbbbf30b4730b43f23232b2611e2bdae4fecbd40ca48eee0d082": {
+    "name": "docx",
+    "text": "创建、编辑和审查 Word 文档"
+  },
+  "200131c77b02e0d67dc522e3c9ac10660379b8c03883d9f2fe27b0075f3bf905": {
+    "name": "dspy",
+    "text": "使用 DSPy 编排模型程序和优化提示"
+  },
+  "628368cf7f36a75c086823bf669296e1b76ad412e8f5d898a1f4622c0ccc2585": {
+    "name": "email-inbox-triage",
+    "text": "整理收件箱优先级并起草回复"
+  },
+  "e6a2475e4a2d2ac22f6e7f7426efa82c0b230f143417a77e26edbf3da306db4f": {
+    "name": "evaluating-llms-harness",
+    "text": "通过基准测试评估语言模型"
+  },
+  "a9268171f53a64e56aa7bf6009f2e118783279a9a1c5e5138c32865b0c4487cd": {
+    "name": "exploration",
+    "text": "用小型代码实验和草图验证想法"
+  },
+  "2300a4ee2308674d00e42a9b76a1ad3eed52d75b1c4b27ce4bfd19b2aba8eb49": {
+    "name": "github-code-review",
+    "text": "审查 GitHub PR 的代码变更"
+  },
+  "39f3f26b5c94d18b15f9c5c8863588f8fe5552959f4406df635222f3b8f54235": {
+    "name": "github-repo-management",
+    "text": "管理 GitHub 仓库、远端和版本发布"
+  },
+  "b3e83747719dbb2b5cac79558ca9b75ccc52df31a55e98176bf0e70b63a61b3f": {
+    "name": "godmode",
+    "text": "研究模型越狱提示与限制绕过"
+  },
+  "a2e3ec3baf6a1e5eea949b48bd95d67c7cc6c14cec956ca393dcef1b229f964b": {
+    "name": "grounded-citations",
+    "text": "用可验证的来源支撑回答与文档"
+  },
+  "24879e4e167ca05e4c8f2b58ee1175a569660207360d340ed99bc83a6d2256bf": {
+    "name": "hermes-agent",
+    "text": "配置和扩展 Hermes Agent"
+  },
+  "5242c78bb93a5745085c0bdddfd9d208bb2246d83a060374f68d7bd8189f1190": {
+    "name": "hermes-agent-profiles",
+    "text": "创建和管理 Hermes 的配置与角色"
+  },
+  "06e1e26341fcea58ccfe2741b0ea9d1306ad4ac9b35d4065022b048c7889516c": {
+    "name": "huggingface-hub",
+    "text": "搜索、下载和上传模型与数据集"
+  },
+  "2f52594bef52b038dd7b7c9b5c3ca704d74ed38c4a0c8a7a261c3478d6a9377a": {
+    "name": "ideation",
+    "text": "通过创意限制生成项目想法"
+  },
+  "bdbcd1101b263b3be75d565044e2d31e8f162d189ba4c5fab2309b5e63a94e0b": {
+    "name": "inspecting-hermes-desktop-dom",
+    "text": "检查 Hermes 桌面的 DOM 与 CSS"
+  },
+  "f36325e01d15dd7ebc29a260dac2d2f8a4910be51b6c64fc9269bedccbeb2d78": {
+    "name": "jupyter-live-kernel",
+    "text": "使用 Jupyter 内核分步运行 Python"
+  },
+  "1a163d4ce4211b6f5c9437e46b23064fcf313e088c9379984928cf7581b2121b": {
+    "name": "kanban-orchestrator",
+    "text": "通过看板拆解并分配 Agent 任务"
+  },
+  "caf4c4922fdf3a9005ed309366a8adc88829dd8775016b85851078aba0e79b8a": {
+    "name": "kanban-worker",
+    "text": "执行 Hermes 看板任务并处理边界情况"
+  },
+  "66ed4c6c0cefecf48b0dab2120206092ab173aba69ab3f9f15c934cdb7302ce3": {
+    "name": "linear",
+    "text": "通过 API 管理 Linear 问题和项目"
+  },
+  "3511bda0e8aba4763d1feaff2b0daf9c4777eeaf86b6db2f8fb1b89ac78cd5de": {
+    "name": "llama-cpp",
+    "text": "运行本地 GGUF 模型并查找模型资源"
+  },
+  "5994ecf6cad49305604aeebb27a256ac76f08a2238dc58bfde5a655306f4a6be": {
+    "name": "macos-computer-use",
+    "text": "通过截图、鼠标和键盘操作 macOS"
+  },
+  "bc600040fd7fc8ab04840fedeaccd02d5d294ede9806cb18cfec3949b2bcee4f": {
+    "name": "meeting-action-items",
+    "text": "从会议记录提取决策和行动项"
+  },
+  "23146b8db03c41514e66a1d73b62c943c81be037caf524137e689d2a44428e79": {
+    "name": "minecraft-modpack-server",
+    "text": "部署带模组的 Minecraft 服务器"
+  },
+  "2bf78edda0c69ed2db8493b48786c332750e870fd30f07ddf8206f3e55f58b18": {
+    "name": "native-mcp",
+    "text": "连接 MCP 服务并注册工具"
+  },
+  "b952a45d6a65fc24890f1218acdc56769a5ad872d62193f52d0eb3c0a0bec5ab": {
+    "name": "obliteratus",
+    "text": "研究语言模型拒绝行为的移除方法"
+  },
+  "bb72d20cf73a846818a3aab7659bfd25b3546abad9feb803e38aba3d508fb160": {
+    "name": "opencode",
+    "text": "通过 OpenCode CLI 委派代码开发"
+  },
+  "88c6104b904e936e8849e7ec967a0f6187ab46ff74e328c1d28f4350b608f6bb": {
+    "name": "openhue",
+    "text": "控制 Philips Hue 灯光、房间和场景"
+  },
+  "be1e0ed816fd9d1c57fbec6bb2f41b9c6154f13d39841399c5339924a87b60d9": {
+    "name": "petdex",
+    "text": "安装和选择 Hermes 动画吉祥物"
+  },
+  "4acaced722eb816bc0ce5c4ac5318690a86ae661aac8a3d47f07d99a35be17a1": {
+    "name": "pixel-art",
+    "text": "使用经典游戏配色制作像素画"
+  },
+  "7d041ffda23eff9774bcaa6f61bec9e325222a19334677940f232fd0ca83e642": {
+    "name": "plan",
+    "text": "把任务写成可执行的 Markdown 计划"
+  },
+  "a597b16b42a82babb112bd3ebe11d377c6df4ea0165c769c5a51d956df3dec7c": {
+    "name": "pokemon-player",
+    "text": "通过模拟器自动游玩宝可梦"
+  },
+  "d52803d03d3936e28ddde4eb3ba0b3c2849d7367f7fb8028e0e7997f83d917e6": {
+    "name": "polymarket",
+    "text": "查询 Polymarket 市场与价格数据"
+  },
+  "06f89fda71ca3cd2bbf1bcae74ccc6753eff24e43db8655f5fd84232e24e68dd": {
+    "name": "pretext",
+    "text": "制作以文字布局为核心的浏览器演示"
+  },
+  "41b5c08c9cd8c293463b2145883886c8c1c1abc4df02b87d33a06457b6152da4": {
+    "name": "product-price-monitor",
+    "text": "监控商品或机票价格并提醒"
+  },
+  "2fa92bb12cc8b4de70fc786c7a09baa117d1157f7e700588545a4e8bd2437524": {
+    "name": "research-paper-writing",
+    "text": "编写和整理机器学习研究论文"
+  },
+  "3e990f9611318a9445aad7a437b64a60348b5b1f25d5a4059e19bb57e41502d9": {
+    "name": "sdlc-review",
+    "text": "审查看板交接并分配验证后的结果"
+  },
+  "521f4636732cd283a2d971748c776e0771ede313bdf3b096853a57bc295f0a1f": {
+    "name": "segment-anything-model",
+    "text": "通过点、框或蒙版分割图片对象"
+  },
+  "2cc9a451fb413ed2da387ed3258b071b6b9527bc90218382fabe8a255a4924a4": {
+    "name": "spotify",
+    "text": "播放音乐并管理 Spotify 歌单"
+  },
+  "c89402679f1c5aaf1deb88ef8629cc4b49a3099bdef959a717aa5553cba7bdec": {
+    "name": "systematic-debugging",
+    "text": "系统排查程序错误和异常行为"
+  },
+  "a9d0dfb5f1a3a4911bbcbd1f7b3f8febe8561dfda357af32f3bd9183aad88f3c": {
+    "name": "test-driven-development",
+    "text": "先定义验证，再实现功能或修复"
+  },
+  "614ba1845d0afa9b02501ec95191ed00e8646ee61d95faac83a37f7994ea41de": {
+    "name": "touchdesigner-mcp",
+    "text": "通过 MCP 操作 TouchDesigner 实时视觉"
+  },
+  "78fd44bae2e2eb8de0d71a31744bc2147247eb3fc9f9bc55123dd180c4fe7575": {
+    "name": "webhook-subscriptions",
+    "text": "用 Webhook 事件触发 Agent 任务"
+  },
+  "4eac807edd60010fe88a9728e0964ce6938a21040b60921175e5944a4334df76": {
+    "name": "weekly-review-planning",
+    "text": "整理本周工作和下周计划"
+  },
+  "dd8cae7dce6cd787f5876dded93cd63e480ea555674ecb581c64be885cbbfb89": {
+    "name": "xlsx",
+    "text": "创建、编辑和分析 Excel 与 CSV"
+  },
+  "17127636376453356c1363c120e3a1271b27b24663dce6269bb79fe98a274960": {
+    "name": "frame-bold-poster",
+    "text": "制作复古杂志海报风格的动态标题"
+  },
+  "a056184f0a94311fa046ed254f483cb43e6e6a25f2f9c1d7d217ffa0b0a19519": {
+    "name": "frame-bold-signal",
+    "text": "制作深色渐变背景的动态章节卡"
+  },
+  "d3c93ec4dc30710909f58bc04c020b6a7548df15790178d57de7c5082f197749": {
+    "name": "frame-build-minimal",
+    "text": "制作极简留白的逐字标题动画"
+  },
+  "bc491a55aab464bca0040a6943d7685a5aa9202cc876ef7dbc34d71cd74dcc2b": {
+    "name": "frame-creative-voltage",
+    "text": "制作分屏与手写文字动画"
+  },
+  "9471a22043659f16747f8a6b3c2a6d1a983ed4f90042d6657a9fbc3183534d31": {
+    "name": "frame-data-chart-nyt",
+    "text": "制作新闻编辑风格的动态图表"
+  },
+  "32a69a417de8fd2a8cfc5d1bf93fe138b009bf0edb31f74f0f686a373f927c8f": {
+    "name": "frame-data-chart-nyt",
+    "text": "制作新闻编辑风格的动态图表"
+  },
+  "49eef9c75fcfc327a5ec0cd7d6cb21d64e675cba9c3e2004012e0baf336ef848": {
+    "name": "frame-data-rollup",
+    "text": "制作柱形生长与数字滚动动画"
+  },
+  "cb5c76a1908e1bce80916a8157ab2610048faba64e6767b398c4c2fe17ca2bcc": {
+    "name": "frame-electric-studio",
+    "text": "制作双面板展开的引言动画"
+  },
+  "f74703ab62ab0fda59a78b89d69dbdad1193db08bc757cb0f521f5131ab0c113": {
+    "name": "frame-glitch-title",
+    "text": "制作数字故障风格的标题转场"
+  },
+  "b982bbdb94ba3356d15a5a2fdbbd55fa027807f4a7642413ff1b27444d4497c3": {
+    "name": "frame-glitch-title",
+    "text": "制作数字故障风格的标题转场"
+  },
+  "f050262611568f6a6d6391aa066f40e265ba5dde5e981911839a6c7fe962ab90": {
+    "name": "frame-light-leak-cinema",
+    "text": "制作带漏光和颗粒的电影开场"
+  },
+  "85a13dc5a3c20179d6cc5f09f619622537894ae179686638f0f25cb1d103a0cd": {
+    "name": "frame-light-leak-cinema",
+    "text": "制作带漏光和颗粒的电影开场"
+  },
+  "ddf978034a3c6d41d71b4a53cd200298896f3b640d6c0fe31984b242dd6dcb75": {
+    "name": "frame-liquid-bg-hero",
+    "text": "制作流体背景与引言叠加动画"
+  },
+  "273727e2553f249092138c67d308f7946e2692678f79fbc5844aa870999acf10": {
+    "name": "frame-liquid-bg-hero",
+    "text": "制作流体背景与引言叠加动画"
+  },
+  "7685d09e3ab2fc4e665a3407dd5adb786d5c9bce86f28259aaf6acdac9c196c5": {
+    "name": "frame-logo-outro",
+    "text": "制作 Logo 拼装和品牌结束动画"
+  },
+  "dcb683e4b24bd168d588f385ff5ccfc123e3ac0544bc7f79ed7728ad30c602ca": {
+    "name": "frame-logo-outro",
+    "text": "制作 Logo 拼装和品牌结束动画"
+  },
+  "4170170b4a285ff3aa2bf0310c669149ed1ce0430f8a95498d10adb551e37299": {
+    "name": "frame-pentagram-stat",
+    "text": "制作瑞士网格风格的数据动画"
+  },
+  "48f0138e6f7dfeebdc80fbe517104be6b3afa5bb200275ce7154aea769d0448a": {
+    "name": "frame-takram-organic",
+    "text": "制作柔和节点图与曲线连接动画"
+  },
+  "793da608adfb778e221b94a136efd7bdefbded573da2ace219a459e647500f08": {
+    "name": "problem-statement",
+    "text": "明确用户问题、目标和受阻原因"
+  },
+  "ef6442fccc88eba913f96d033302c629b4c2f5038cd02766dc0e74d05e4e1743": {
+    "name": "product-detail-images",
+    "text": "为电商商品生成详情页图片组"
+  },
+  "dc9269e5ec68b998ef1f6381d080fe21827923414285222e6fe4a75ef87ccf3e": {
+    "name": "product-review-analysis",
+    "text": "分析商品评论、痛点和改进需求"
+  },
+  "3b3f855c32765f3295fdbdd234f3718db0ff89c966cd09890317925cf4630d8a": {
+    "name": "product-sense-interview-answer",
+    "text": "组织产品面试中的口头回答"
+  },
+  "81a239ba0d928aa0dd052a1c82742db7ba91de178ca3ac4285f01bcf88f59d32": {
+    "name": "proto-persona",
+    "text": "根据现有资料建立初步用户画像"
+  },
+  "cf2d4a278d0870240d3fd88af1510a6465ce60f255ced84eb164b2d4051e2a8c": {
+    "name": "receiving-code-review",
+    "text": "核对代码审查意见后落实修改"
+  },
+  "1224c52fca4437ff1e82c79666aee104d6a6756d8b185a64565364b0c732fd3d": {
+    "name": "recommendation-canvas",
+    "text": "评估 AI 产品想法的价值和风险"
+  },
+  "2004eeee9ad1c18bfff831aa64ec74c23f8da3c2b4aec8a31e62914ed9e34c71": {
+    "name": "release-readiness",
+    "text": "核对发布条件并提出发布建议"
+  },
+  "9df94bc79576301b98d43a45c8b57c5df7fb62d8d454b1c0c8ea5f1dcbc82749": {
+    "name": "remotion-best-practices",
+    "text": "按 Remotion 最佳实践制作视频"
+  },
+  "a299cc688d79581feb70dcdceb6de4b491544ec223a56901d31ee7c24c3d60ce": {
+    "name": "remotion-video-toolkit",
+    "text": "用 Remotion 和 React 编程制作视频"
+  },
+  "70f5a165ca35539472d96aff7493a72651d1f4939a3fc73536ab501d55bfb77f": {
+    "name": "requesting-code-review",
+    "text": "在完成开发后请求代码审查"
+  },
+  "ad1aad8351e3b3ca7ee6c50a6623f81b68706d08fe1cf58c08a57d9fbd9d0a50": {
+    "name": "saas-revenue-growth-metrics",
+    "text": "计算 SaaS 收入、留存和增长指标"
+  },
+  "aefbf30bf9a84d1a42f4676b30b89d6171b1dd84d37d142a1769fa70d08d57bd": {
+    "name": "security-auditor",
+    "text": "审查代码、认证和输入处理的安全风险"
+  },
+  "2879c136cfb7803307f48f71cec3c674923598e39d33be27fd8b7534f77aeff5": {
+    "name": "artifact-template-design-report",
+    "text": "按设计报告模板整理内容"
+  },
+  "bb2b7c691f7b2c6829181d1bf6b7a1c9f22c3d38af823cbdf5691dfa5311725b": {
+    "name": "artifact-template-experiment-analysis",
+    "text": "按实验分析模板整理假设与结果"
+  },
+  "a077552c9feeea65ceddb399a71db42ad901f53c36ec9b75bcb8c4bcd623caf0": {
+    "name": "artifact-template-investment-committee-memo",
+    "text": "按投委会备忘录模板整理材料"
+  },
+  "0409f95e0472a278eb1afed2263565cf3c3064d8a9e4290fda6d53520d14f00c": {
+    "name": "artifact-template-legal-memorandum",
+    "text": "按法律备忘录模板起草文档"
+  },
+  "bed58b5835b145177dc1ad07b19915413f1d8e960a7fbce883c90409e4441595": {
+    "name": "artifact-template-minimal-letterhead",
+    "text": "按简洁信头模板编写商务信件"
+  },
+  "9b9332a45c0bb8e86607a898cb8b8a5c14add159468da9ec5fdaa6b300a84338": {
+    "name": "artifact-template-strategy-memorandum",
+    "text": "按策略备忘录模板整理决策"
+  },
+  "ce7db54e45bbcd1121e593a2035cf07ecf5d5f3eb0be91b7fd275edca1a5261e": {
+    "name": "artifact-template-system-design",
+    "text": "按系统设计模板整理架构文档"
+  },
+  "1ee1f3a7f0420b2aed940dd6811348b1bf78cd6cb9cdfd032d52b755ce5470d1": {
+    "name": "design-kpis",
+    "text": "定义业务指标、目标和衡量方法"
+  },
+  "0af065e5a8063538fbc3ccce542c402d5d3a40be1cbf812a29d63bcf16ee1425": {
+    "name": "design-qa",
+    "text": "对照参考视觉核对已实现的界面"
+  },
+  "8a2294413e60529b0c3062aaf266503559fb2b1d3b05257194b04835159bd580": {
+    "name": "diagnosing-superpowers",
+    "text": "分析 Superpowers 工作流出错的原因"
+  },
+  "276176767b625ca08110bedce096d9db012c91fca668a92ba3e34b5bd73d5d75": {
+    "name": "env-vars",
+    "text": "管理 Vercel 环境变量和配置"
+  },
+  "53abc0eff527502394c0cfe594c2dbd8ff2bfa469c5a92054803dc110eff9e6c": {
+    "name": "env-vars",
+    "text": "管理 Vercel 环境变量和配置"
+  },
+  "349a1fe4d9fd3632da281e8c2d4f1f00923368df77d878fc190947da27ae7bad": {
+    "name": "eve",
+    "text": "使用 eve 构建可持久运行的 AI Agent"
+  },
+  "a331201f09411aa7857174bc203343fbf95780ab15aa5cc204df0936a21188fe": {
+    "name": "eve",
+    "text": "使用 eve 构建可持久运行的 AI Agent"
+  },
+  "4cc8dfba8c9e30fee764908c4ab4c812cacabb0d8fea06c0b3a46a2a779db2ca": {
+    "name": "excel-live-control",
+    "text": "操作当前已连接的 Excel 工作簿"
+  },
+  "d3e8016bd41db77f2876a3feb39c83c150c5f4afef59837b8b3f3c33e8e4299d": {
+    "name": "export",
+    "text": "通过 ChatCut 导出视频成品"
+  },
+  "96251be969c00f207d35e99d588fd4e259a583586fb4f949dd56ebda458d6a1c": {
+    "name": "figma-code-connect",
+    "text": "将 Figma 组件关联到代码示例"
+  },
+  "fa10c68e055593c165a3aec16b063d667032e7c2e657f77ec43935055df52c3d": {
+    "name": "figma-create-new-file",
+    "text": "创建 Figma、FigJam 或 Slides 文件"
+  },
+  "d8b8c4b9a484d21951f8dd80bdd6cec11959ca0c9d1bf85f149756fb87f03b72": {
+    "name": "figma-create-new-file",
+    "text": "创建 Figma、FigJam 或 Slides 文件"
+  },
+  "f3c235c234e7212bf4d6cc3118b591c4c056073ca77e1133522d6788d0810d21": {
+    "name": "figma-design-to-code",
+    "text": "将 Figma 设计转换为应用代码"
+  },
+  "ef0f3722d71a2d43217bf0b2976e9128c01ef56fb4efa0b4fddcd6250d47b508": {
+    "name": "figma-generate-design",
+    "text": "将应用页面布局制作成 Figma 设计"
+  },
+  "234a7a6dfc4f955ea5be21556f311d68013e37a9965d76aedeb95d46f053adaf": {
+    "name": "figma-generate-library",
+    "text": "从代码构建 Figma 组件库和设计规范"
+  },
+  "b8b04478cffbb9b8c31d3444db1f1b485f29fa2bf7c591db8a974438b564120f": {
+    "name": "figma-generative-plugins",
+    "text": "创建和更新 Figma 生成式插件"
+  },
+  "e2356747c37a7245972e7a21f6f02597cd9db054fa1fd33f283e80389b5b5cbb": {
+    "name": "figma-implement-motion",
+    "text": "把 Figma 动效实现为应用代码"
+  },
+  "652ca7fe336ecda001da39c58ef2cc42f60894a043f3ab1fe553cd90103ce5a2": {
+    "name": "figma-shaders",
+    "text": "创建和调整 Figma 着色器效果"
+  },
+  "c320b90484637dfaec924785aac67dbf66d5dfb6c8e24fde300be56614b298f3": {
+    "name": "figma-swiftui",
+    "text": "在 Figma 设计与 SwiftUI 代码间转换"
+  },
+  "324b1eb723150a071d949a98e6a5293cf9973be6c1ddc139d56d732996091ef4": {
+    "name": "figma-use-figjam",
+    "text": "在 FigJam 制作和编辑画布内容"
+  },
+  "a60b86fccb5410ecb311495c1a2216994df7782413f2af8b50f53bea90b7ea19": {
+    "name": "figma-use-motion",
+    "text": "为 Figma 节点设置关键帧和动画"
+  },
+  "ad09a06f82de894d563c9af58a75235c71b58357e99ab9aaab78882ff9c0f704": {
+    "name": "figma-use-slides",
+    "text": "在 Figma Slides 制作和编辑演示"
+  },
+  "29ba040b485a7e86b8ec87157eda1821cfb5d0ad7bdb904c976d087edf0948cc": {
+    "name": "gather-business-context",
+    "text": "收集业务背景，为数据分析明确问题"
+  },
+  "c25c5fded38211450ca0751f41781724230e1250512c9a192e506d9d931ffba9": {
+    "name": "geist",
+    "text": "在 Next.js 配置 Geist 字体和排版"
+  },
+  "3cdf33a1d90a826538951286239cb046abd5f5000dcccff4d3dc33d15b32b04c": {
+    "name": "geistdocs",
+    "text": "配置和编写 Geistdocs 文档站点"
+  },
+  "ad43533ccfadf182fde8a71fde45541e54b9089cf7a29dd3ea365bfbe2d111e5": {
+    "name": "get-context",
+    "text": "补齐设计目标和产品需求背景"
+  },
+  "ea0b0b322411712ac9039959cd5465493b441f5f842d8f42ae8b597c71aa22eb": {
+    "name": "gh-fix-ci",
+    "text": "排查并修复 GitHub Actions 检查失败"
+  },
+  "cd0f3d4fb864ea22e4d84bfe73af4e1b92dc577092134d544c0e8ac21d8098d3": {
+    "name": "gmail-inbox-triage",
+    "text": "按优先级整理 Gmail 邮件"
+  },
+  "10637082faa91cb126e4021ce8faacb6283d1474acafcb80c55a9de0ae2516ba": {
+    "name": "google-docs",
+    "text": "创建和编辑 Google Docs 文档"
+  },
+  "f5deffccdb5b81b32dba7c458e8ba25a94c3f220e7fadec355e88fff97cf2c65": {
+    "name": "google-drive",
+    "text": "查找和管理 Google Drive 文件"
+  },
+  "fbb7f2fbfd589faba5ce26b9184000ef7a04784cf98aaa77caaf5d6f05137ff8": {
+    "name": "google-drive-comments",
+    "text": "在云端文档创建、回复和处理评论"
+  },
+  "9109c75d60cdeb714ef4a64a90339df63d79b500e0d7fab86be757d1c73486e2": {
+    "name": "google-sheets",
+    "text": "分析和精确编辑 Google Sheets"
+  },
+  "26e90128484bb86dc90dd8a4832f0be8b5c4a93f58aad06ba309710381d329bd": {
+    "name": "google-slides",
+    "text": "根据模板制作 Google Slides 演示"
+  },
+  "5aa41041a0a296aa5658784ddf04919cc17799c1b476682a1b77461703b72811": {
+    "name": "gsap",
+    "text": "使用 GSAP 制作 HyperFrames 动画"
+  },
+  "3bbe1d106b5c11051fe7662c9ad81a88b21511487e1f182025c967ccd82060bd": {
+    "name": "hyperframes-registry",
+    "text": "安装并接入 HyperFrames 模板组件"
+  },
+  "6e54e0f121a70d8d5a19a82a07f50e2fd8538e23ff289165770bd035377a3e5e": {
+    "name": "ideate",
+    "text": "根据设计需求生成视觉方案"
+  },
+  "f8261ecb66b7111bd5a8b2de74c85b2d4b9ced171c8ba4abbc48c5ba49031dcc": {
+    "name": "ideate",
+    "text": "根据设计需求生成视觉方案"
+  },
+  "fb9ab60ff607fccdf81abbe026008af3686f9afe36c345e65362e7e3019db595": {
+    "name": "index",
+    "text": "编排 Product Design 的研究和设计任务"
+  },
+  "6ebd56977ccfc6bdbaaa7562359ef7123aa1ea053977ff691fdfc6cc179566fa": {
+    "name": "index",
+    "text": "编排 Product Design 的研究和设计任务"
+  },
+  "1f229ff9c48130c33df0835ff9c3e2795c039923a279205a5c24733a12a76264": {
+    "name": "index",
+    "text": "编排 Product Design 的研究和设计任务"
+  },
+  "ce1a0a0da7192542171a60a2df79e8dbc85b9c6c7f31eb8ea5c7bd53495582b7": {
+    "name": "index",
+    "text": "编排 Product Design 的研究和设计任务"
+  },
+  "da16a26dcc653f51dc39df6fbcb9c8f81ec73260d30bbafd3d707703de65ba0b": {
+    "name": "is-agentic",
+    "text": "评估网站或 MCP 接口对 Agent 的可用性"
+  },
+  "09abaeb96d3f8fbf3af71585f763c48f9c8892e3d125e508c070bc8f0a9447da": {
+    "name": "jupyter-notebooks",
+    "text": "创建和验证可复现的数据分析笔记"
+  },
+  "b50051e79a8e8193cf647da81c44e8aa0427904ee7a09d226f7fe9af1f6f6854": {
+    "name": "knowledge-update",
+    "text": "补充 Vercel 产品与平台知识"
+  },
+  "fd65879fdf5dc715450687eaa53c29990c6ba9a7e2e541de14d7e7303dbca13a": {
+    "name": "known-errors",
+    "text": "排查 ChatCut 工具失败和异常结果"
+  },
+  "1a438986a6eec2269c8d755e50087366a0fdf584aa8343bb4867d14ea5875f9a": {
+    "name": "kpi-reporting",
+    "text": "制作 KPI 报表和经营指标汇报"
+  },
+  "a8c7e1a32d24e9f8945bd51d91036cd3a969a3bfece1987c2ed1ec37da6eca8e": {
+    "name": "manage-schedules",
+    "text": "管理 Space 页面相关的定期自动化"
+  },
+  "998dfc15bcb4ae480ddafbdb7ee00345247c6dc28cb5d9a13a594e4f21ae93e8": {
+    "name": "market-sizing",
+    "text": "估算市场与业务机会的规模"
+  },
+  "8dfc97cfbf3dad892f3b6de005fe6532c7e64daa125b086089e15882b8cf5648": {
+    "name": "marketplace",
+    "text": "管理 Vercel Marketplace 集成"
+  },
+  "dfac0f8d52ed66991fa2653c13666825c3d39fd59c8f41da2bd4915fa0268116": {
+    "name": "marketplace",
+    "text": "管理 Vercel Marketplace 集成"
+  },
+  "482bf479632573f7daaa65e8d7c986bd5f58b86ac9ec2b10afc395473c6bc78f": {
+    "name": "metric-diagnostics",
+    "text": "分析指标变化、异常和差异原因"
+  },
+  "c6a278188d96cdab9a6094e8aaf31fcdd9595a8d2d00768f1210a9d6ba577e23": {
+    "name": "micro",
+    "text": "使用 micro 构建轻量 HTTP 服务"
+  },
+  "3d984b1f8f1e6aeea0a434ed08b4ff89ce3a8ceee19314f12880e2d649039c40": {
+    "name": "music",
+    "text": "通过 ChatCut 生成音乐和配乐"
+  },
+  "700536743fdd4addfe78d853ec9c8450ede612ac0da789a13e9e98ec0dc2ab8d": {
+    "name": "ncc",
+    "text": "将 Node.js 模块与依赖打包为单文件"
+  },
+  "35c714c42ea99afe487f010e5ba623ce742b2009a6b76589dad33e2144ccd4ae": {
+    "name": "next-forge",
+    "text": "使用 next-forge 构建 SaaS 项目"
+  },
+  "e007d5ca2da095808a5c5b75e5f7e2030fa0f590a11ec9f86e089e1c1a19e1a0": {
+    "name": "nextjs",
+    "text": "构建和排查 Next.js 应用"
+  },
+  "866754c4586737118cb456b500634296faab5019b40299a4af831b959530d944": {
+    "name": "payments",
+    "text": "接入 Stripe 支付、订阅与 Webhook"
+  },
+  "d81655b3f906d83b7bc3b16543e7453766e5248d0207d56de574787ab155cd13": {
+    "name": "pets",
+    "text": "查看和管理 ChatGPT 动画宠物"
+  },
+  "158059fd336d4bf51d662c13ff85d82fd05a11b70057fd983fbb2b309d979a53": {
+    "name": "plugin-management",
+    "text": "发现和管理插件、权限与连接"
+  },
+  "d35a0ecc9af3b374d4cedbb51fb7a07ce22f79330f3a057afb80c6ed9003ce2b": {
+    "name": "product-business-analysis",
+    "text": "用业务和产品数据支持决策"
+  },
+  "f4307da4efb3131b69d2b33417787a202e6419edc4f9c2dd6f19b9f07e6dae7e": {
+    "name": "product-help",
+    "text": "查询 ChatCut 官方功能与使用说明"
+  },
+  "b051ca6e11421c8579aa15bc53e279c2cef385953237dab087c990cf4b26143d": {
+    "name": "amazon-product-research",
+    "text": "研究亚马逊商品需求、竞争和利润潜力"
+  },
+  "3cc2940d46aa3c5d7c1a6dfcd37c6f1cc0afc857568ce8c311cf4284501b3264": {
+    "name": "baoyu-translate",
+    "text": "翻译文章，支持快速、标准和精细模式"
+  },
+  "a0907bd68c7527bd364897534296c0e859130cfdf6e4005dbde15f81cfbe515d": {
+    "name": "defuddle",
+    "text": "提取网页正文并转换为简洁 Markdown"
+  },
+  "dad3fafb952b9565e64aa2319842123c0b00c451626d49b1ea78664f0bcba5fb": {
+    "name": "derisk-measurement-advisor",
+    "text": "选择指标和验证方式，降低产品风险"
+  },
+  "f95ed388dbf8fd5a2bcf13e1b77e09e300d3c69314516e0d154b4d089dcaada9": {
+    "name": "epic-hypothesis",
+    "text": "把大型需求定义为可验证的假设"
+  },
+  "fe6d010b1701d721dcec4457cdebe3045864b3b0c8771c2fd0940c21fdfdcd50": {
+    "name": "frontend-design",
+    "text": "设计和实现可使用的前端界面"
+  },
+  "6931caf3b15d7226270b219bea5814446bec67e79c06ed84024170cb8a568c60": {
+    "name": "opportunity-solution-tree",
+    "text": "梳理目标、机会、方案和验证的关系"
+  },
+  "7cb65d552374ed26e80fe7276c6ed46aef5ec696328d8ea6c69b0d77f508408d": {
+    "name": "pol-probe",
+    "text": "用低成本实验验证高风险假设"
+  },
+  "828c3304c84b33d83e6a3b0ee0dd772628754e0640b133acd4f05d0b8a836452": {
+    "name": "test-plan",
+    "text": "制定测试策略、用例和验收范围"
+  },
+  "ebc225fd64440e03e19e9a0df9806d4a3746d2ac38952889b624dabf4c070317": {
+    "name": "test-runner",
+    "text": "编写、运行和改进自动化测试"
+  },
+  "162b2903e7311b2594d3679b08ee85e597b5d67fbb2706a0ac9954f8b88002f3": {
+    "name": "test-scenarios",
+    "text": "根据用户故事生成完整测试场景"
+  },
+  "1166d94e1c21fce5f34712b14d1fca62a56a894fe41e3e45a5428bf22b7cde42": {
+    "name": "visual-system-provider",
+    "text": "为视觉内容提供一致的设计规范"
+  },
+  "78adbbe932a9e9ed5591bb7565f5b8e9debc8a20176ef57b5b61c0abfdbff976": {
+    "name": "yuanbao",
+    "text": "查询元宝群组信息与成员，并处理提及"
+  },
+  "a415238c37d5582552cef3add60a4655cb9ff4f1ab65eaf2d422c7983fa2760e": {
+    "name": "access-protected-vercel-deployment",
+    "text": "访问和测试受保护的 Vercel 部署"
+  },
+  "330bef9b12cbcc9ee3b7a2cb593d054c2978e816c44b648ebe1f090ffe60146e": {
+    "name": "ai-generation-persistence",
+    "text": "将 AI 生成内容保存到数据库"
+  },
+  "1cb789187ca55dfe220075f4f8cbc0d5da678eaa97e0c6485c75d9657e419539": {
+    "name": "artifact-template-analytics-dashboard",
+    "text": "按分析看板模板整理数据与图表"
+  },
+  "816a80e1b2cb7e79f60e0f2439fe39e85d6e2af7c69a63be4c4de56b9f07d914": {
+    "name": "artifact-template-business-review",
+    "text": "按经营回顾模板制作汇报演示"
+  },
+  "1978199d14edbde125a5a5ae10344b08a1145e9e8f276452142c08dcdd73c33c": {
+    "name": "flags-sdk",
+    "text": "配置功能开关和 A/B 实验"
+  },
+  "6541b3f6ded75a85e45ee92abd0e431c16210e789f8359f34223a900ca5f3858": {
+    "name": "gh-address-comments",
+    "text": "处理 GitHub PR 中待解决的审查意见"
+  },
+  "892162b0e41bfb3bf3e272e7ac7ac33aaf304a090a66df4993cfcb5a0a318f98": {
+    "name": "github",
+    "text": "通过 CLI 管理 GitHub PR、问题和仓库"
+  },
+  "12215a8c2b02dfa3e0595987e741cbe6920f44ce6fb6d62627104928310ee43e": {
+    "name": "source-command-generate-data",
+    "text": "生成用于测试的模拟数据集"
+  },
+  "c377c5e2b756afa0015d69f25c88629d82f360dc2752a2a4c8b9369427fbb624": {
+    "name": "source-command-test-scenarios",
+    "text": "从功能需求生成正常与异常测试场景"
+  },
+  "3672fe052d894544dc1493c74f9f24ad36ac8f284817ee3e4db98eaf5add41bf": {
+    "name": "yeet",
+    "text": "提交变更到 GitHub 并创建草稿 PR"
+  },
+  "82f5ef64d3b349353a810d8d7eba55cd5b9eba6d8830e0114cebb8eec7483a96": {
+    "name": "github",
+    "text": "通过 CLI 管理 GitHub PR、问题和仓库"
+  },
+  "41396648720e8477995b855325e02f05c325ba9b9dbf5ca7c5ccfc84c86cb4a6": {
+    "name": "github-auth",
+    "text": "配置 GitHub 的令牌、SSH 与 CLI 登录"
+  },
+  "7a469d4d45ec0cc2c118cf65441ecd36c7d49665a3827c68e6220be57ef2a1eb": {
+    "name": "github-issues",
+    "text": "创建和整理 GitHub 问题"
+  },
+  "9c6331ec8f84668d2725a39d8637b0f05c3ee70914d010913d08b5bc89eb14f6": {
+    "name": "github-pr-workflow",
+    "text": "管理 GitHub PR 的开发、检查和合并流程"
+  }
+}

@@ -1,239 +1,131 @@
 # Agent Skill Manager
 
-A local dashboard for keeping agent skills under control across Codex, Claude Code, OpenClaw, Hermes, and public skill folders.
+English | [中文](./README.zh.md)
 
-[中文](./README.zh.md) | English
+## Overview
 
-I built Agent Skill Manager because my local skills folder kept growing, and at some point it became hard to answer simple questions: which skills are still useful, which ones are duplicated, which ones are built in, which ones have not been used for a long time, and which copies are safe to update or remove.
+Agent Skill Manager brings locally installed Skills into one workspace. It is for people who use several Agents and want to find their Skills, check for updates, install new ones, and recover removed content.
 
-This tool scans local skill directories, groups the same skill across platforms, shows usage and health information, and gives you a small local admin page for day-to-day cleanup.
+The local Web UI is the main entry point. An Agent can also use the Python CLI. Both share a SQLite registry and the same maintenance logic; running the manager does not require a model API.
 
-![Agent Skill Manager dashboard](https://raw.githubusercontent.com/chemny/agent-skill-manager/main/assets/agent-skill-manager-dashboard.png)
+## Preview
 
-## What You Can Use It For
+![Skill inventory with example data in the local management UI](assets/skill-manager-preview.png)
 
-- See all local skills in one table instead of opening several hidden folders.
-- Check which Agent platform a skill belongs to: Codex, Claude Code, OpenClaw, Hermes, or public.
-- Find duplicate skills and inconsistent local versions.
-- See 30-day usage counts imported from local session logs when those logs are available.
-- Check health scores based on status, metadata, and file structure.
-- Add your own skill source folders.
-- Install new skills from GitHub, GitLab, Gitee, GitCode, skills.sh, or zip links.
-- Export a simple management report.
-- Review update candidates and unify local copies when versions differ.
-- Disable or delete skills with confirmation and backup.
+## Features
 
-## Who It Is For
+| Capability | What you can do |
+| --- | --- |
+| Unified inventory | Browse grouped Skills and see their Agent associations, installation time, size, category and update status. Independent installation directories remain separate on disk. |
+| Update checks | Check all eligible installed Skills against their recorded sources. Successful results are reused for 15 minutes; failed requests can be retried, subject to provider rate limits. |
+| Installation | Install from supported public repository URLs, HTTPS ZIP links, a local folder or a local ZIP, then choose the Agent and installation location. |
+| Agent directories | Add supported Agent presets with OS-specific default paths, or register custom directories in Settings. |
+| Backup and recovery | Create and restore backups, move deleted backups and uninstalled Skills to the recycle bin, and permanently delete recycle-bin entries after confirmation. |
+| Categories and tags | Organize Skills with a basic category and tags, and filter or sort the list directly. |
+| Local history | Inspect failed or interrupted operations and export diagnostic records when troubleshooting. |
 
-This is mainly for people who already have a growing local skill library.
+## Installation
 
-It is useful if you:
+### Requirements
 
-- use more than one Agent platform;
-- install or write skills often;
-- want to clean old skills without guessing;
-- need a quick way to see where a skill is installed;
-- want a Chinese/English local management UI.
+Use an Agent that supports local Skills and local command execution. Codex and Claude Code can use the root `SKILL.md` and Python entry point.
 
-If you only have a handful of skills, a file browser may be enough.
+| Item | Requirement |
+| --- | --- |
+| Python | Python 3.10 or later; the core uses the standard library, including SQLite. |
+| Browser | A current desktop browser for the local management UI. |
+| Git and network | Needed for Git-backed source checks and updates; public providers may impose request limits. |
+| File picker | macOS uses its system picker; other platforms use Python Tkinter when available. Local paths can also be entered manually. |
+| Operating system | Tested on macOS. Windows paths and adapters have been reviewed and have simulated tests, but Windows has not been tested on a real machine. Automatic shared-link creation is not supported on Windows. |
 
-## How It Works
+### Quick Installation
 
-Agent Skill Manager keeps its own local registry. A scan reads known local skill folders, detects skill-like folders, groups copies by name, imports usage records where possible, and stores the result in SQLite.
+Ask your Agent:
 
-The dashboard is just a view over that local registry. When you scan again, it refreshes the installed copies, usage counts, health scores, source labels, and update hints. Update and delete operate on the actual local files. Disable moves editable skills into a matching `.disabled` folder, and enable moves them back.
-
-Default roots include:
-
-- public: `~/.agents/skills`
-- Codex: `~/.codex/skills`, `~/.codex/plugins/cache`
-- Claude Code: `~/.claude/commands`, `~/.claude/agents`, project `.claude/commands`, project `.claude/agents`
-- OpenClaw: `~/.openclaw/skills`, `~/.openclaw/plugins`, `~/.openclaw/tools`, `~/.openclaw/workflows`
-- Hermes: `~/.hermes`
-
-You can change these from the local dashboard after the first run.
-
-## Install
-
-Install it like a normal local skill:
-
-```bash
-git clone https://github.com/chemny/agent-skill-manager.git ~/.agents/skills/skill-manager
+```text
+Install https://github.com/chemny/skill-manager as a local Skill.
+Check the required environment, install it, and verify that you can load and run it.
 ```
 
-After installation, start a new agent session and use it like any other skill.
+The Agent should report the installed location and whether the command-line entry point is ready.
 
 ## Quick Start
 
-Ask your agent:
+```text
+Use skill-manager to scan my installed Skills and open the management page.
+```
+
+The page opens on your computer. Start with **All**, then choose an Agent or filter the list. **Refresh** synchronizes the inventory; **Scan** discovers changes in configured directories.
+
+## Usage Examples
+
+### Check for updates
 
 ```text
-Use skill-manager to scan my local skills and open the admin dashboard.
+Check all my installed Skills for updates and show which ones have newer versions.
 ```
 
-If you want to run it directly from the terminal:
+Checking does not install anything. Updates use the recorded source, and local content is backed up before replacement. Missing sources and failed checks are not treated as proof that a Skill is up to date.
 
-```bash
-python3 ~/.agents/skills/skill-manager/scripts/agent_skill_manager.py scan
-python3 ~/.agents/skills/skill-manager/scripts/agent_skill_manager.py web --host 127.0.0.1 --port 8765 --open
+### Install a Skill
+
+```text
+Install this Skill for Codex: <repository URL or local folder>.
 ```
 
-The first command scans your local skills. The second command opens the dashboard.
+The manager identifies the content and installation location before writing files. An existing destination is not silently overwritten.
 
-## Common Commands
+### Back up and recover
 
-```bash
-python3 scripts/agent_skill_manager.py scan
-python3 scripts/agent_skill_manager.py list
-python3 scripts/agent_skill_manager.py search skill-manager
-python3 scripts/agent_skill_manager.py show skill-manager
-python3 scripts/agent_skill_manager.py usage --days 30
-python3 scripts/agent_skill_manager.py health
-python3 scripts/agent_skill_manager.py report
-python3 scripts/agent_skill_manager.py web --open
+```text
+Back up my installed Skills so I can restore them later.
 ```
 
-On Unix-like systems:
+Backups appear in **Backups**. Deleting a backup moves it to **Recycle Bin**; permanent deletion is available there. Destructive Web actions show a confirmation dialog. Restoring over different existing content requires a replacement choice and first creates a backup.
 
-```bash
-bin/asm scan
-bin/asm web --open
+### Manage another Agent
+
+```text
+Add OpenCode to the manager and show its installed Skills.
 ```
 
-On Windows:
+Presets supply platform-appropriate default directories. Removing an Agent's management configuration does not delete its Skill files. Shared directories may be used by multiple Agents; uninstalling shared content affects those users of the directory.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File ".\scripts\start-manager.ps1"
-```
+## How It Works
 
-You can also double-click `scripts\start-manager.cmd`.
+The manager scans configured directories and records installed items, source evidence, update results and operation history in SQLite. The browser reuses inventory data for 15 minutes and backup-list data for one hour. Writes refresh affected records.
 
-The Windows launcher checks for Python 3.9+ using `py -3`, `python`, then `python3`, and opens `http://127.0.0.1:8765/` after the local server starts.
+| Component | Responsibility |
+| --- | --- |
+| `SKILL.md` | Instructions for an Agent using the manager. |
+| `scripts/agent_skill_manager.py` and `bin/asm` | Python CLI, local Web server and macOS/POSIX command wrapper. Windows can invoke the Python script directly. |
+| `assets/maintenance.html` | Inventory, updates, installation, backups, recycle bin and settings UI. |
+| Maintenance modules in `scripts/` | Source checks, ownership rules, file validation, backups, task execution and recovery. |
 
-For a first-time Windows check:
+The service binds to the local loopback interface and uses a local request token. Data stays in `~/.agent-skill-manager` by default; `ASM_HOME` selects an isolated data directory. Source searches and update checks contact the configured providers. Diagnostics may contain local paths, so review exported reports before sharing.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File ".\scripts\install-windows.ps1"
-```
-
-## The Dashboard
-
-The local HTML dashboard is the easiest way to use the tool. It includes:
-
-- Chinese and English UI switching;
-- skill scan and refresh;
-- filters for grade, platform, status, and source;
-- name-only search;
-- details and usage records;
-- custom source management;
-- update channel management with search, check, download, update, success-rate, and failure statistics;
-- skill installation from GitHub, GitLab, Gitee, GitCode, skills.sh, or zip links;
-- Smart Scan checks with a 24-hour cache and selectable full, platform, or grade scopes;
-- local version unification;
-- real enable/disable by moving editable skills in and out of `.disabled` folders;
-- delete with confirmation and backup;
-- report export.
-
-## Update Source Order
-
-When you click update or run Smart Scan, the manager looks for newer versions in this order:
-
-1. Read the local 24-hour cache first.
-2. Check the skill's bound repository source: GitHub, GitLab, Gitee, GitCode, or the GitHub repository behind a skills.sh link.
-3. If GitHub is unavailable, times out, or is rate-limited, try GitCode's GitHub mirror candidates and use them only after they pass validation.
-4. If no bound source exists, or that source is temporarily unavailable, search SkillsMP.
-5. If SkillsMP has no usable result or fails, continue with `find-skills` / skills.sh.
-6. If no remote version can be found, compare local copies with the same name and offer local version unification.
-
-A failing remote source is treated as a source problem, not a skill problem. For example, GitHub rate limits or SkillsMP timeouts do not become "incomplete metadata" recommendations. GitCode mirrors are used as GitHub download fallbacks; the canonical source remains GitHub.
-
-`More -> Update Channels` records search, check, download, update, success, and failure counts for every channel. Channels are scored by enabled state, manual priority, success rate, and successful call volume; discovery channels with higher scores are tried first. Custom `mirror` channels may use `{owner}`, `{repo}`, `{prefix2}`, and `{prefix3}` placeholders for GitHub mirror fallback URLs.
-
-Start it with:
-
-```bash
-python3 scripts/agent_skill_manager.py web --host 127.0.0.1 --port 8765 --open
-```
-
-## Runtime Files
-
-Runtime data is not stored in this repository.
-
-- database: `~/.agent-skill-manager/skills.db`
-- config: `~/.agent-skill-manager/config.json`
-- reports: `~/.agent-skill-manager/reports/`
-- backups: `~/.agent-skill-manager/backups/`
-- logs: `~/.agent-skill-manager/logs/`
-
-Use `ASM_HOME` if you want a separate runtime directory:
-
-```bash
-ASM_HOME=/tmp/asm-test python3 scripts/agent_skill_manager.py list
-```
-
-## Compatibility
-
-Agent Skill Manager is designed to work across Codex, Claude Code, OpenClaw, Hermes, and public skill directories.
-
-It uses local filesystem scans, `SKILL.md` metadata, SQLite, and the Python standard library. Platform paths are defaults, not hard requirements.
-
-Windows support is built around PowerShell and Python 3.9+:
-
-- `scripts\start-manager.ps1` starts the dashboard and opens the browser.
-- `scripts\start-manager.cmd` is a double-click launcher.
-- `scripts\skill-manager.ps1` forwards actions to the Python CLI and auto-detects `py -3`, `python`, or `python3`.
-- `scripts\install-windows.ps1` checks Python, creates the default `%USERPROFILE%\.agents\skills` folder, and prints the exact start command.
-- Git is optional for normal scanning and dashboard use, but some update and install sources need Git in `PATH`.
-
-## Safety Notes
-
-The tool is intentionally conservative:
-
-- builtin and plugin-cache skills are treated as observe-only;
-- disable moves editable skills out of the active source root into a matching `.disabled` folder;
-- delete asks for confirmation and backs up editable files first;
-- remote update checks use a 24-hour cache;
-- if no remote update is found, local copies can still be compared and unified;
-- local databases, reports, backups, logs, and usage records are ignored by Git.
-
-## Update This Skill
-
-If you installed with Git:
-
-```bash
-cd ~/.agents/skills/skill-manager
-git pull
-```
-
-Then open a new agent session.
+Built-in status uses ownership evidence rather than treating an entire Agent directory as protected. Cleanup advice is advisory: an old version or a same-name copy alone does not prove that content can be safely deleted.
 
 ## Repository Structure
 
 ```text
-skill-manager/
-├── README.md
-├── README.zh.md
-├── CHANGELOG.md
-├── LICENSE
-├── SKILL.md
-├── assets/
-│   └── agent-skill-manager-dashboard.png
-├── bin/
-│   └── asm
-└── scripts/
-    ├── agent_skill_manager.py
-    ├── release_check.sh
-    └── skill-manager.ps1
+SKILL.md                         Agent instructions
+scripts/                         CLI, server and maintenance modules
+bin/asm                          POSIX command wrapper
+assets/maintenance.html          Management UI
+assets/skill-manager-preview.png Example-data screenshot
+references/                      Usage, API and attribution documents
+tests/                           Isolated automated tests
+README.md / README.zh.md         English and Chinese introductions
+LICENSE                          Project license
 ```
 
-## Release Check
-
-```bash
-./scripts/release_check.sh
-```
-
-This checks Python syntax, embedded JavaScript when Node.js is available, temporary runtime creation, and leftover Python cache files.
+See [maintenance commands](references/maintenance.md), the [Web API](references/web-api.md), [Agent icon sources](references/agent-icons.md), and the [Chinese purpose catalog](references/purpose-zh.json). Development changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-MIT
+Project code is available under the [MIT License](LICENSE). Bundled third-party icons retain their own notices; see [Agent icon sources and license](references/agent-icons.md). Product names and logos identify their respective products and do not imply endorsement.
+
+## About Me
+
+Maintained in [chemny/skill-manager](https://github.com/chemny/skill-manager). Report reproducible problems or suggest improvements through the repository's [Issues](https://github.com/chemny/skill-manager/issues).

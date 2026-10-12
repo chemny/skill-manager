@@ -14,7 +14,7 @@ function Test-Python {
   )
   foreach ($candidate in $commands) {
     if (-not (Get-Command $candidate.Command -ErrorAction SilentlyContinue)) { continue }
-    & $candidate.Command @($candidate.Args + @("-c", "import sys, sqlite3, http.server; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)")) 2>$null
+    & $candidate.Command @($candidate.Args + @("-c", "import sys, sqlite3, http.server; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)")) 2>$null
     if ($LASTEXITCODE -eq 0) {
       return "$($candidate.Command) $($candidate.Args -join ' ')".Trim()
     }
@@ -24,7 +24,7 @@ function Test-Python {
 
 $python = Test-Python
 if (-not $python) {
-  throw "Python 3.9+ was not found. Install Python from https://www.python.org/downloads/windows/ and enable 'Add python.exe to PATH'."
+  throw "Python 3.10+ was not found. Install Python from https://www.python.org/downloads/windows/ and enable 'Add python.exe to PATH'."
 }
 
 New-Item -ItemType Directory -Force -Path $SkillRoot | Out-Null

@@ -1,248 +1,211 @@
 ---
 name: skill-manager
-description: Use when the user wants to list, search, inspect, audit, update-check, activate, deactivate, report on, or manage locally installed agent skills and adjacent capabilities across Codex, Claude Code, OpenClaw, Hermes, and configurable local roots.
-version: 1.1.0
-local_updated_at: 2026-06-02T00:00:00+08:00
+description: Manage locally installed agent skills across Codex, Claude Code, Hermes and configured roots. Use when users need inventory, source-bound update checks, safe updates, cleanup, history, backup verification or recovery.
+metadata:
+  version: "1.3.0"
+  local_updated_at: "2026-10-08"
 ---
 
 # Agent Skill Manager
 
-Agent Skill Manager is a cross-platform local registry for agent capabilities. It manages skills, commands, agents, workflows, plugins, tools, MCP servers, and prompt templates across multiple Agent runtimes.
+管理本机技能。Web 后台是主要的可视化管理入口，Python CLI 和 Skill 保留为其他调用方式，共用维护核心。网页操作不需要模型 API；CLI 不需要后台服务，Web 服务按需启动。默认数据保存在 `~/.agent-skill-manager`，设置 `ASM_HOME` 可以隔离测试数据。
 
-The manager is intentionally local-first:
+入口：`~/.agents/skills/skill-manager/bin/asm`，或者 `python3 ~/.agents/skills/skill-manager/scripts/agent_skill_manager.py`。以下示例以 `asm` 表示这个入口，不要求它已经加入 PATH。
 
-- Registry database: `~/.agent-skill-manager/skills.db`
-- Config file: `~/.agent-skill-manager/config.json`
-- Reports: `~/.agent-skill-manager/reports/`
-- Backups: `~/.agent-skill-manager/backups/`
+## 默认工作方式
 
-## Platforms
+1. 列清单时运行 `scan`，再读取 `inventory` 的 JSON。区分真实目录、单个软链接、共享根目录、失效链接和历史缺失记录。按 ID/完整路径选对象；同名匹配多个对象时不能自行挑一个。
+2. 更新只检查确认的来源。没有来源先展示未知；从网站找到的同名仓库只是候选，不能自动绑定。可读取本地 Git origin 作为来源证据，不执行技能脚本。
+3. CLI 写操作先生成预览，向用户说明具体目标、差异、保留的额外文件、冲突、受影响的已知 Agent 和恢复方式。只有用户明确授权这个实际维护操作后，才执行 `apply PLAN_ID --yes`。网页所有明确操作点击即执行，必要参数只选择一次，不再进入用户审批队列。授权开发工具不等于授权清理真实技能库。
+4. 执行完成读取结果和 `history`，告知成功、失败或中断，以及备份 ID。拒绝或失败不是成功。预览后文件或已知引用变了，重新预览；不要绕过校验直接 rm/cp。
 
-Default configured platforms:
+## Web 后台任务与浏览
 
-- Public: `~/.agents/skills`
-- Codex: `~/.codex/skills`, `~/.codex/plugins/cache`
-- Claude Code: `~/.claude/commands`, `~/.claude/agents`, project `.claude/commands`, project `.claude/agents`
-- OpenClaw: `~/.openclaw/skills`, `~/.openclaw/plugins`, `~/.openclaw/tools`, `~/.openclaw/workflows`
-- Hermes: `~/.hermes`
+扫描、检查更新和维护任务在后台运行，不能禁用导航、搜索、筛选、分页或详情浏览。备份列表、历史、安装位置和使用证据用只读请求，避开工作队列、数据库初始化与写事务；任务期间看到的是已提交记录。配置变更、安装、卸载、覆盖更新等冲突操作仍串行执行。检查完成用轻提示和主动查看结果入口，不自动弹窗打断浏览。
 
-If a platform uses different local paths, edit `~/.agent-skill-manager/config.json` after the first run.
+## Web 来源与整理建议
 
-## Commands
+- 页面有有效缓存时只读取保存的清单，不自动核对路径或检查远端；无有效缓存时首次生成清单。顶部刷新核对当前登记路径。快照不监视外部改动，发现新目录需要扫描；快照不能替代写操作前的新预览和指纹校验。
+- “来源检查”按真实 Skill 目录统计来源缺失、GitHub 可检查、渠道暂不支持、来源冲突和插件只观察。可检查仅表示来源已登记，不保证远端可访问或子路径正确。显示本地 Git origin、安装元数据或用户绑定依据。
+- 来源候选仅来自本机共享目标或同名条目的已知来源，不能自动绑定；同名只是一条弱线索。用户核对 URL、ref 和子目录后再确认绑定。相同真实目录的入口来源冲突时逐项核对。
+- 网页移除“查找重复”、副本同步和共享整理入口，不把不同 Agent 的独立安装当成应删除的重复文件。兼容 CLI 接口保留，不自动执行整理。
+- 列表先按实际目录去重，再按可靠来源（provider、仓库、ref、子目录及 Skill 名称）归组，同一 Skill 只显示一行，Agent 列合并图标，目录保持独立。来源缺失、冲突、分支不同或同名不同仓库不能仅按名称合并；集合仓库不同名称也不合并。详情可查看各安装位置及独立状态，分组不证明文件相同或已被 Agent 加载。
+- “查看空间构成”只读统计第一层文件/目录，不跟随软链接。依赖、缓存、任务输出和版本记录按目录名分类供人工核对，不是安全清理判定。没有使用日志不判定闲置。
 
-Prefer the cross-platform Python entrypoint:
-
-```bash
-python3 ~/.agents/skills/skill-manager/scripts/agent_skill_manager.py scan
-python3 ~/.agents/skills/skill-manager/scripts/agent_skill_manager.py list
-python3 ~/.agents/skills/skill-manager/scripts/agent_skill_manager.py web --open
-```
-
-On Unix-like systems, the shorter wrapper is:
-
-```bash
-~/.agents/skills/skill-manager/bin/asm scan
-~/.agents/skills/skill-manager/bin/asm list
-~/.agents/skills/skill-manager/bin/asm web --open
-```
-
-On Windows, the PowerShell wrapper forwards to the Python implementation and auto-detects `py -3`, `python`, or `python3`:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.agents\skills\skill-manager\scripts\start-manager.ps1"
-powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.agents\skills\skill-manager\scripts\install-windows.ps1"
-powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.agents\skills\skill-manager\scripts\skill-manager.ps1" -Action Scan
-powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.agents\skills\skill-manager\scripts\skill-manager.ps1" -Action List
-powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.agents\skills\skill-manager\scripts\skill-manager.ps1" -Action Web
-```
-
-Windows users can also double-click `scripts\start-manager.cmd`.
-
-## Inventory
-
-Use when the user asks what skills are installed, which platform they belong to, whether they are active, or what versions they are on.
+## 日常命令
 
 ```bash
 asm scan
-asm list
-asm list --platform codex
-asm search pdf
-asm show skill-manager
-asm duplicates
+asm inventory
+asm scan --project /path/to/project
+asm roots list
+asm roots add --platform hermes --path /path/to/skills
+asm check-updates SKILL_ID
+asm source-bind SKILL_ID --url https://github.com/owner/repo --ref main --path skills/example
+asm usage SKILL_ID --days 90
+asm scan --import-logs
 ```
 
-The registry normalizes each item into a capability:
+`scan --project` 明确添加项目的 Codex、Claude、Hermes、OpenClaw 技能位置；不遍历全机项目。默认路径按当前用户主目录和 `CODEX_HOME`、`CLAUDE_CONFIG_DIR`、`HERMES_HOME`、`OPENCLAW_STATE_DIR` 解析。Codex 的 `.agents/skills`、默认状态的 OpenClaw `.agents/skills` 按工具约定发现；Hermes 用户级外部目录须有配置证据。Hermes 配置支持 JSON 与常见 YAML 路径块，复杂 YAML 未能可靠解析时提示手动登记，不能猜测共享。`discover_defaults=false` 关闭某 Agent 的自动补充；自定义根列表默认保持显式范围。插件缓存只观察，隐藏备份目录不当已安装技能。
 
-- `id`
-- `name`
-- `kind`
-- `platform`
-- `path`
-- `status`
-- `health`
-- `version`
-- `source_type`
-- GitHub metadata when present
-- usage counters
+不存在所有 Agent 统一读取的“公共目录”。界面把 Agent、存放位置和共享关系分开：至少两个真实 Agent 指向同一实际 Skill 目录才算跨 Agent 共享，空间按实际文件去重。同名独立副本不算共享。旧 `shared` 身份只作为存储命名空间保留以兼容历史与备份，不作为 Agent 展示。目录关联不证明当前会话加载或执行。
 
-Supported kinds include:
+`check-updates` 不带对象会检查所有已登记技能，可能较慢，通常先按具体对象或 `--platform` 缩小范围。检查固定 ref 时，“最新”仅指与该 ref 的内容一致，不表示整个项目的最新发行版。
 
-- `skill`
-- `command`
-- `agent`
-- `workflow`
-- `plugin`
-- `tool`
-- `mcp-server`
-- `prompt-template`
-- `unknown`
+`usage` 显示 30/90/180 天等窗口中的读取证据、来源与证据端点。导入主动选择 `scan --import-logs`；日志增量读取，历史保留，缺时间戳跳过。无记录是未知；读取次数不是技能执行次数，证据端点也不证明中间持续覆盖。
 
-## Status
+## 主列表字段
 
-Status changes are real filesystem moves for editable capabilities. Deactivate moves a capability from its configured source root into the matching `.disabled` root. Activate moves it back.
+### Agent 预设与组件归属
+
+新增 Agent 从主机操作系统解析默认目录，不让用户选择 Windows/Mac 或输入路径。预设覆盖 Codex、Claude Code、Hermes、OpenClaw、Cursor、Gemini CLI、Copilot、WorkBuddy、OpenCode、Pi、TRAE 中国版、Qwen Code、Qoder CLI、QoderWork、Kimi Code、Amp、Cline、Windsurf、CodeBuddy Code。DeepSeek 是模型服务，不伪装成本地 Agent。预设路径支持多层目录；OpenCode 尊重 XDG_CONFIG_HOME，Pi 尊重 PI_CODING_AGENT_DIR，Kimi Code 尊重 KIMI_CODE_HOME。添加只登记扫描配置，不创建或删除 Agent 的文件。
+
+远端来源与本机组件归属分开。Skill 自己声明 builtin、同名、官方作者、数据库旧 builtin 标记、任意路径中出现插件目录，都不能证明系统身份。清单读取和每次写入独立核验，旧清单缓存升级后失效。
+
+当前本机归属适配：Codex 已核验分发标识与对应组件 ID；Claude/Codex 插件缓存读取原生插件清单，Claude 同时匹配 installed_plugins.json 的实际路径与版本；Gemini/Qwen/OpenClaw 扩展读取各自原生扩展清单，软件包与可执行文件解析出的当前安装包绑定。未匹配版本的安装包标为归属未核实，不冒充系统内置，也不允许直接破坏软件包。其他 Agent 的文档名单仅是候选，尚不能作为跨版本禁删清单。
+
+用户独立 Skill 正常进入回收站，包括同名副本、曾被错误标记的条目，以及 Hermes 用户目录中的可删除副本。单个软链接只移除入口。插件内 Skill 标明所属插件及版本，列表显示“插件管理”，不把插件当成系统组件。当前尚未接入插件原生卸载执行接口，需在所属 Agent 中卸载整个插件，不能伪装成已支持，也不能直接删除插件缓存。
+
+主列表按 Skill 名称、占用空间、安装时间、Agent、使用频次、更新状态、操作排列。安装时间优先显示可信成功安装记录或实际安装目录的 `.skill-lock.json` 中 installedAt；否则读取实际目录创建时间作估算，悬停标明依据。无法读取时显示横杠，不显示首次登记；修改时间不能代替安装时间。Agent 列仅显示图标。使用频次无下拉框，每项按最近有效读取证据显示今天、近 7/14/30/90 天、90 天前或未记录；不能把无记录当未使用。详细读取计数和来源仍在详情查询。更新列仅使用待查询、已是最新、有更新、查询失败；不适用项显示横杠。来源缺失和来源冲突在来源设置中处理，不作为更新状态或审批事项。查询和写入中的反馈放在对应按钮或表格区域，写操作点击即执行，后台保留保护及指纹校验。
+
+主列表按上述 Skill 来源归组后筛选；任一安装位置有更新即显示有更新，其余情况保留查询失败、待查询或不适用，不能将部分已是最新当成全组最新。Agent 筛选先限定安装位置，再计算状态和操作范围。多个 Agent 共用筛选仍指同一实际目录的共享引用，不把同来源独立目录误称为共享文件。失效文件与链接在设置的扫描异常中查看。无可靠安装日期时隐藏安装排序，较早使用排序把无记录项放到末尾，不推断为闲置。
+
+顶部刷新只重新读取已登记条目的文件、状态与日志，不发现新目录；扫描按默认和已登记位置发现新增、移除项，并刷新清单，不遍历整块硬盘。名称打开详情；归组更新展开为当前 Agent 范围内可更新的实际目录，各自备份、执行并报告结果，不重复更新已是最新的位置。卸载只有一个受影响 Agent 时直接执行（可包含该 Agent 的多个目录）；多个 Agent 时仅弹一次目录选择，选定后直接卸载进入回收站。真实共享目录说明全部已知影响，单个软链接只移除入口。执行前重新校验所选引用范围、保护和内容，关联变化时拒绝执行，不留下待确认事项。
+
+单项维护完成后只刷新受影响 ID 和共享引用，静默合并列表及已保存快照，不显示整表 Loading，不重算全库使用次数。恢复和安装直接登记实际目标及对应 Agent 的根目录入口，不用全库扫描发现刚写入的内容。备份删除、移入或移出回收站只读取对应备份记录，不触发 Skills 清单刷新；备份大小与空间计数读取保存的估算值，文件校验仍在实际操作时执行。批量操作返回已完成项目的 ID，部分失败也更新成功部分；分页、筛选和滚动位置保持。未知外部文件变化仍需主动刷新或扫描，局部更新不会伪装成全库已核实。
+
+同一网页会话中，备份与回收站共用一小时列表及清理建议缓存。再次进入先显示已有列表，到期后后台刷新并合并重复请求，不遮挡表格；刷新失败保留旧列表，短暂退避后再重试。备份创建、导入、扫描和清空回收站主动刷新，单项变更立即读取相关记录；安装项变化使关联建议失效。并发旧列表不能覆盖新操作结果。列表清理建议仅显示“建议删除”“不建议删除”“自行判断”，分析未完成显示横线；原因保留在详情，判定仍沿用只读证据规则，缓存不替代删除或恢复前校验。
+
+## 预览与执行
 
 ```bash
-asm activate skill-manager --platform codex
-asm deactivate skill-manager --platform codex
+asm update SKILL_ID
+asm sync SOURCE_ID TARGET_ID
+asm deactivate SKILL_ID
+asm activate SKILL_ID
+asm delete SKILL_ID
+asm plans
+asm apply PLAN_ID --yes
+asm discard-plan PLAN_ID
 ```
 
-Use `deactivate` for capabilities that should stop being loaded by platforms that scan the active source root. Use delete only when the capability should be backed up and removed from disk.
+以上 update/sync/activate/deactivate/delete **只生成预览**，包括旧 `delete --yes` 参数也不会直接删除。实际执行统一使用 `apply`。首次没有可信基线或有本地冲突时，先检查内容；经用户选择后用 `update/sync --allow-local-changes` 重新生成预览。不会默认选择最高版本或批量统一同名项。
 
-## Usage
+删除默认移到回收站，不自动永久删除。删除单个软链接仅移走链接；修改实际共享目录影响其全部已知引用。Agent 根目录本身是软链接时，不能通过该别名假装只为一个 Agent 停用/删除，需选择真实共享源并说明整体影响。
 
-Usage can be logged from a user action, a runtime hook, a session-log parser, or manually:
+网页从共享根入口卸载时，仅可转到同一 `real_path` 的已登记可写真实目录，打开目录选择并列出全部已知 Agent；不能自动执行或把影响解释为仅当前 Agent。没有真实登记项或有关联保护时不能绕过限制。安装位置详情的卸载按所选入口执行，单个 Skill 链接仍只移除该入口，不切换为删除共享文件。
+
+`protect SKILL_ID` 设置保护，`protect SKILL_ID --off` 取消。保护项阻止更新、同步、删除、停用和恢复覆盖；不自动解除。
+
+## 备份、恢复和历史
 
 ```bash
-asm log-use skill-manager --platform codex --source manual --confidence high
-asm usage --days 30
+asm backup SKILL_ID
+asm backups
+asm verify-backup BACKUP_ID
+asm restore BACKUP_ID
+asm restore BACKUP_ID --allow-local-changes
+asm history
+asm recover-operation OPERATION_ID --yes
+asm purge BACKUP_ID
 ```
 
-Usage sources should be interpreted by confidence:
+恢复和 purge 也只是预览，仍需 `apply PLAN_ID --yes`。目标存在时恢复拒绝静默覆盖；允许覆盖后也会先备份当前内容。损坏备份不能恢复。历史发现的内容直接进入备份或回收站列表，保留在原位置，不要求先复制收录。不确定原位置的目录显示需指定恢复位置，点击恢复时选择已配置 Skills 根目录下的位置，再校验并生成预览。压缩包或含嵌套链接的目录显示暂不支持恢复，不自动解压。
 
-- `runtime-hook`: direct instrumentation, high confidence
-- `session-log`: parsed from transcripts, medium confidence
-- `manual`: explicitly recorded by the user or agent, high confidence
-- `ui`: recorded from the HTML admin interface, high confidence
-- `inferred`: weak text inference, low confidence
+隔离基本不释放磁盘，完整备份也会占空间。永久清理 purge 不可撤回，需明确授权具体条目。操作中断时先看 history；仅处理 running 条目，不能盲目清理 `.asm-hold-*`。详细边界见 [维护与恢复说明](references/maintenance.md)。
 
-## Health
-
-Run health checks when the user asks whether skills are broken, incomplete, missing metadata, or badly tracked:
+## Web 后台
 
 ```bash
-asm health
+asm service start --open
+asm service status
+asm service stop
 ```
 
-Health checks currently validate:
+启动后首页进入 `/manage`：固定侧栏仅展示已安装、更新、安装 Skill、备份与回收站、设置；清单按实际目录去重及可靠来源归组，点选后使用右侧详情面板。用途说明保留原文并提供独立列表简介。网页点击明确命令直接执行，必要参数只填写一次，不弹预览或重复确认。旧页面仅作为 `/legacy` 兼容入口。
 
-- path exists
-- `SKILL.md` exists for normalized skill directories
-- remote-backed items have source metadata when available
-- version is known when possible
+长操作通过后台任务显示状态，页面刷新可继续查看；同一资源互斥，其他浏览和搜索仍可用，任务运行时不能主动停止服务。服务重启不自动重试写操作，通过历史核实结果，不重放旧暂存操作。备份列表标明创建时校验，单项校验和恢复会重新检查完整性。服务仅监听回环地址；请求需本地令牌，CLI 维护不依赖此服务。`web --open` 仍可前台运行。开发接口见 [Web API](references/web-api.md)，未来客户端可以复用，无需调用模型或解析聊天。
 
-## Version Checks
+## 全部、备份与回收站
 
-Remote-backed capabilities are detected from repository metadata in `SKILL.md` frontmatter or `_meta.json`, including GitHub, GitLab, Gitee, GitCode, and skills.sh URLs.
+左侧导航为全部、更新、安装、备份、回收站、设置。“添加目录”先浏览文件夹；当前 Agent 明确时直接发现并登记，否则仅选择一次归属，不复制文件。全量检查更新在更新页，全部页保留选中项检查。备份只有一个列表，支持创建全部/指定 Agent/选中 Skills 的 ZIP、扫描历史和导入备份包；共享真实目录只存一份。回收站支持恢复、批量恢复及清空，清空跳过保留项目，点击命令直接执行，不额外审批。恢复填写必要位置后自动校验目标和冲突，不自动重建跨设备链接或绑定远端来源。具体接口和边界见 [本地目录与可迁移备份](references/web-api.md#本地目录与可迁移备份2026-10-08)。
+
+网页日常命令不以右侧面板作为必经入口。Agent 目录行直接提供打开文件夹和移除手动配置，设置中的 Agent 加号直接添加。备份按钮默认直接创建，扫描按钮直接扫描默认位置，其他范围放菜单；导入直接浏览 ZIP。分类名称在表格内新增或编辑，渠道搜索在当前渠道下展示。必要的多 Agent 卸载目录、恢复目录、来源候选与新增渠道参数使用紧凑窗口；Skill 与备份详情仍可使用侧栏。
+
+## 网页安装
+
+在“安装”粘贴 HTTPS 仓库或支持的链接，或者输入本地 Skill 文件夹/ZIP 路径，选择已配置的实际 Skill 根目录，只有一个候选时直接安装，多个候选时选择需要的内容即安装。识别和内部暂存只写私有暂存区；执行复用同一 apply 核心，校验所暂存内容，不重新下载。不执行 Skill 脚本，不安装依赖。
+
+仅新增目录，已存在目录、失效链接、预览后出现的目标均拒绝覆盖；共享根别名、插件目录和 commands/agents 根不作为安装位置。仓库内有链接需要人工核对，不自动安装。来源/目标改变后重新识别；安装失败有历史记录，成功登记远端来源（本地安装不假造远端来源）、基线和扫描到的引用。安装预览核验 name/description，完成结果只表示已部署，不能声称当前 Agent 会话已加载。安装选择仅用于选择内容；取消、离开安装页或修改来源/目录会释放选择暂存，不保留待确认事项。
+
+## 当前边界
+
+- 安全更新首版支持 GitHub 的确认仓库/ref/子路径；其他现有渠道保留用于来源发现和新安装，不能把候选当已确认来源。
+- 同步保留额外本地文件；只删除可信基线中被远端移除、且本地未改的文件。冲突需要选择，不做强制镜像同步。
+- 不自动清理，不迁移中央库，不添加常驻开机服务，不做客户端验证。
+- 尚无 API Key 管理、完整运行时 Hook 或秘密识别。备份包含原始文件，存放在本机私有目录，但未加密；如果技能内含凭证，备份也会包含它们。不要上传备份或把凭证内容输出给模型。
+
+
+## 管理界面与错误记录
+
+顶部“扫描”扫描 Agent 默认约定、已登记位置和插件目录，不遍历整个硬盘。项目目录和使用日志导入在设置的“扫描项目中的 Skills”中选择。状态栏显示上次实际扫描时间，缓存生成时间只在提示中说明。
+
+列表简介优先采用明确元数据、本地整理的中文说明或原文首句；整理说明与原描述摘要绑定，原文变化后不沿用旧说明。不调用模型 API。可在详情“用途说明”中编辑或恢复默认，保存在 `ASM_HOME/descriptions.json`，相同实际目录共享简介，原始 `SKILL.md` 保留。
+
+未绑定来源、来源冲突或渠道不支持时，不能直接检查/更新。更新预览须先有检查结果，已是最新时不提供重复更新。批量检查跳过需补全来源的条目，不自动猜测绑定。
+
+任务与 HTTP 错误记录到 `ASM_HOME/logs/errors.jsonl`，页面通知包含错误编号，操作历史可查看近期记录。日志隐藏常见凭证、URL 登录信息和查询参数；不保存请求正文，不发送到远端。单段超过约 2 MB 时保留上一段。网络断开可继续查询原任务；服务重启不自动重放写操作。
+
+## 独立更新页面
+
+可靠版本号表明远端版本更高时，一律显示“有更新”并计入数量，不因本地修改或缺少同步基线而隐藏。网页单项“立即更新”点击即执行，不弹预览或二次确认；内部先下载暂存、重新核对版本和本地指纹，再创建并校验备份后写入。本地独有文件仍保留，被覆盖的修改可从备份恢复。远端版本不再更高、本地或来源变化时拒绝执行。网页批量更新同样直接执行，每项重新核对版本并自动备份；CLI 保留显式预览与 apply 接口。版本相同但内容不同、版本无法比较或本地版本较高，不直接判定远端有新版本。旧检查与六小时缓存按此规则只读重新解释，失败及已过时的检查不能冒充有效更新结论。“强制重新检查”只跳过缓存，不执行更新。
+
+更新页默认显示已保存的待更新项，进入页面不触发检查或更新文件。检查全部只选取按真实目录去重且支持检查的 Skills，不受主列表搜索或筛选影响；失败重试只选失败项。检查过程保持已有列表，显示总数、完成数与部分结果，浏览和导航可用。检查范围和进度保存到本地 update-run.json，服务中断时不能把未完成记录显示为成功。旧检查记录没有范围则明确说明范围未记录。
+
+列表展示名称、Agent、更新状态、最近检查及操作；不展示版本箭头或本地修改确认提示。单项更新期间按钮显示“更新中”，左侧状态保持稳定，成功后刷新结果，失败后恢复按钮。更新保留自动备份及校验，沿用操作历史和备份恢复入口。检查记录保存本地内容指纹；手动刷新或扫描核对时发现本地变化显示需核对，不持续监控磁盘。新来源绑定及成功覆盖操作清除旧检查结论；旧记录缺指纹时需重新检查后建立指纹。空页区分尚未检查、已检查范围无待更新、无来源、失败与搜索无结果。
+
+## 设置与操作记录
+
+操作记录默认显示有实际意义的用户操作及失败/部分完成的扫描；来源渠道查询和日常成功扫描等内部流水留在诊断记录，不删除原日志。进入操作记录及当前页任务结束时自动读取最新记录，不另设刷新按钮；无异常不显示空说明。只有失败原因、备份恢复、文件差异或具体配置变化等新增信息才提供详情入口。扫描失败详情显示受影响路径与原因，近期错误直接可见；内部日志与诊断导出放在“更多诊断”折叠区。
+
+设置按“扫描位置、更新来源、存储管理、问题排查”分组。来源管理和操作记录不占侧栏；问题排查集中展示失败、中断和扫描异常，原始数据放在折叠详情。扫描位置按真实目录合并，不存在的默认位置折叠；移除某个扫描入口不删除任何 Skill，也不移除其他 Agent 的入口。
+
+网页不提供待确认入口、列表、延期、继续确认或预览审批队列。删除、永久删除、卸载、清空回收站及设置移除，在提交前显示通用居中弹框“是否确定删除？”，按钮为“取消、确认”，右上角可关闭；取消、关闭或 Esc 不发送删除请求，批量操作确认一次。更新、恢复、安装等其他命令点击即执行；多个 Agent 的卸载目录选择等必要参数只填写一次。恢复只读核实准确目标：目标不存在直接执行，内容一致不重复写入；只有目标存在不同内容时提示一次“恢复并替换”，内部仍先校验并备份当前内容。批量恢复沿用列表选择，不重复勾选；原位置未知或整包恢复只选择目标目录。后台校验与暂存由同一任务自动完成，结束或失败时清理未执行暂存，不留下审批事项；不会重放旧待确认操作。失败与运行中断通过操作记录诊断，不能自动重试写操作。CLI 的显式 preview/apply 兼容接口保留，不展示在网页。
+
+备份与回收站页面分两个标签，默认备份；展示名称、保存位置、时间、占用与操作。备份列表、详情和批量“删除”点击后直接进入回收站，可恢复；不永久删除、不释放空间。数据库回收标记保留原文件、版本及恢复元数据，重扫不使其重回备份列表；回收标记、计划与操作记录在同一事务中提交。从回收站恢复这类备份只回到备份列表，不改动已安装 Skills。回收站中的“永久删除”和清空是明确的不可恢复命令，仅在用户点击时执行，不自动清理。更新页与操作结果中的记录、来源、备份入口直达对应设置分组或备份标签。
+
+## 分类、来源恢复与使用记录
+
+- 固定五个主分类：内容创作、编程开发、信息研究、办公效率、工具与自动化；未分类为空。固定八个标签：写作、图片、音视频、代码、搜索、数据、文档、自动化。每项一个主分类、最多三个标签。详情单项编辑、列表选择后批量替换/添加/移除，分类和标签支持筛选。仅保存在维护数据库，同一实际目录共享，独立副本分别保存。
+- 来源恢复读取实际安装位置的 `.skill-lock.json`、安装元数据与 Git origin。文件中的链接、远程名称搜索均只作候选；GitHub 仓库内容核对优先匹配 SKILL.md blob，用户核对子目录后绑定。不自动绑定同名仓库。其他已识别 Git 平台可以保存来源，更新维护暂仅支持 GitHub。
+- 设置→扫描位置→使用记录，独立导入近 30/90/180 天日志；重新核对历史会重读并去重。支持环境配置目录和本次指定的额外日志目录，仅读取 JSONL。识别绝对路径读取、具有明确 cwd 的相对路径读取、无歧义的 Skill 工具调用；普通文本提及和技能清单不计数。详情展示本机日期分组的记录次数、明确调用事件次数与最近记录；覆盖仍不完整。
+- 批量检查复用同仓库固定提交的远程查询和下载。遇 GitHub 限流停止本轮后续请求，未检查项保留原结果，显示本轮未完成。限流、权限、地址失效、网络或证书错误分别提示，不关闭证书校验。
 
 ```bash
-asm check-updates
-asm outdated
-asm update skill-name --dry-run
+asm import-usage --days 90
+asm import-usage --days 180 --replay
+asm set-labels SKILL_ID --category 内容创作 --tags 写作 文档
+asm discover-sources
+asm discover-sources SKILL_ID --remote
+asm probe-source SKILL_ID --url https://github.com/owner/repo
 ```
 
-Automatic overwrite is intentionally conservative. The update command reports local and remote hashes and leaves the final file update to a reviewed operation.
+## 恢复保障与历史内容
 
-The HTML admin provides a reviewed update flow:
+备份列表名称下不重复显示缺失版本或提交编号；保存位置替代保存原因，完整路径在悬停和详情中保留。版本列仅显示真实元数据版本或短提交编号，缺失用 `-`，目录名中的版本只能作为查找对应项的线索。清理建议直接显示“建议删除 / 建议保留 / 暂不能判断”和具体理由。历史外部备份也必须比较本地对应安装项，不能因为缺少来源记录直接跳过分析。只有文件、目录和权限完全相同且校验通过的独立备份，才可作为重复副本的替代；固定保留一份，已标记防误删或仍被引用的备份不建议删除。版本旧、未找到安装项或内容不同本身均不足以建议删除。分析只读且不请求云端，不自动清理；网页删除直接进入回收站，后台仍校验目标与保护状态。
 
-- Check bound repository metadata first, including GitHub, GitLab, Gitee, GitCode, and skills.sh URLs found in `github_url`, `homepage`, or `repository`.
-- If GitHub is unavailable, try validated GitCode GitHub mirror candidates before falling through to discovery sources.
-- If no bound source is usable, search SkillsMP, then `find-skills` / skills.sh.
-- Update channels record search/check/download/update success and failure counts; enabled discovery channels with higher scores are tried first.
-- If a newer remote version is found, confirm before backing up and replacing every selected local copy.
-- If no newer remote version is found but local copies have different versions, offer to unify all local copies to the highest local version.
-- Builtin/plugin cache capabilities are not updated or deleted from the UI.
+备份与回收站只保障通过管理器执行的操作，不承诺其他 Agent 直接编辑时自动备份。保存原因由系统按操作生成，不要求手填。历史发现的目录和压缩包直接合并进对应列表，顶部不显示备份/回收站数量与占用卡片，不显示待核对计数或要求逐项收录。保存时间优先使用准确操作记录；历史目录/文件名中可解析的日期直接展示，日期来源和时区未知说明保留在右侧详情与悬停提示中，不把发现时间或文件修改时间当成备份时间；没有日期线索显示时间不详。备份名称点击打开右侧详情，不在列表行下展开。详情展示明确版本、用途、文件列表和与当前内容的新增/修改/移除差异；按原路径或去重的同名候选比较，同名不证明来源相同，不自动填恢复目标。比较为按需只读快照，恢复仍重新校验。防止误删开关放在详情中，列表保留恢复与删除操作。
 
-Recommended metadata:
+恢复状态为可恢复、需指定恢复位置、暂不支持恢复。历史目录缺少可靠原位置时点击恢复再选择位置，预览校验当前内容与发现指纹一致，暂存到操作预览后按正常恢复流程执行；浏览和发现不额外复制文件。压缩包或嵌套链接暂不自动恢复。管理器原生备份恢复前同样重新校验。
 
-```yaml
-github_url: https://github.com/owner/repo
-github_hash: commit-or-version-hash
-github_ref: main
-github_path: skills/example/SKILL.md
-local_updated_at: 2026-06-02T00:00:00+08:00
-```
-
-## Reports
-
-Generate a management report:
+列表支持搜索、时间/空间排序、保留标记和批量清理；保留标记在预览和实际删除时均校验。历史备份删除也先进入回收站；仅回收站的永久删除命令会移除所显示原位置的文件。批量失败停止并报告部分完成。旧 import-backup 和显式 purge CLI 保留兼容，但不是网页恢复或删除备份的必经步骤。整机迁移和云端存储尚未实现。
 
 ```bash
-asm report
+asm discover-backups
+asm discover-backups --path /absolute/backup-directory
+asm retain-backup BACKUP_ID
+asm retain-backup BACKUP_ID --off
+asm restore HISTORICAL_ID --path /absolute/skills/name
+asm preview-purge-many BACKUP_ID_1 BACKUP_ID_2
+asm apply-purge-many PLAN_ID_1 PLAN_ID_2 --yes
 ```
-
-The report includes:
-
-- total capabilities
-- active and inactive counts
-- zero usage in 30 days
-- metadata gaps
-- top usage
-- cleanup candidates
-
-## HTML Admin
-
-Start the local backend HTML dashboard:
-
-```bash
-asm web --host 127.0.0.1 --port 8765 --open
-```
-
-The dashboard supports:
-
-- English/Chinese language toggle
-- scan and refresh
-- platform/status/source filtering
-- search
-- usage visibility
-- usage event viewer
-- source management
-- update channel management
-- install skills from GitHub, GitLab, Gitee, GitCode, skills.sh, or zip links
-- background Smart Scan checks with full, platform, or grade scopes
-- real activate by moving files back from `.disabled`
-- real deactivate by moving files into `.disabled`
-- checked update flow
-- delete with confirmation
-- health check
-- report generation
-
-The HTML admin is served only from the local Python process. It uses the same SQLite registry as the CLI.
-
-Windows open-box path:
-
-- Requires Python 3.9+ with one of `py -3`, `python`, or `python3` available.
-- `scripts\start-manager.ps1` starts the local dashboard and opens the browser.
-- `scripts\start-manager.cmd` provides a double-click launcher.
-- `scripts\install-windows.ps1` checks Python and creates the default `%USERPROFILE%\.agents\skills` folder.
-- Git is optional for scanning and the dashboard, but some update/install sources need Git in `PATH`.
-
-## Safety
-
-- Do not delete skills by default.
-- Prefer deactivate over delete when the user wants a reversible change.
-- Back up capability paths before any destructive or overwrite operation:
-
-```bash
-asm backup skill-name --platform codex
-```
-
-- Deleting from the HTML admin requires a browser confirmation and then creates a backup before removing files.
-- CLI deletion requires explicit confirmation:
-
-```bash
-asm delete skill-name --platform codex --yes
-```
-
-- Treat builtin/plugin cache skills as managed inventory, not user-owned source.
-- For OpenClaw and Hermes, use config-driven roots until the local runtime path contract is confirmed.
-- Public skills are displayed as `public` in English and `公共` in Chinese.

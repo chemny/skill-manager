@@ -31,3 +31,8 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# Local release review reports
+publish-check-report.json
+smoke-test-report.json
+se-quality-report.json

@@ -1,239 +1,131 @@
 # Agent Skill Manager
 
-一个本地 skills 管理后台，用来管理 Codex、Claude Code、OpenClaw、Hermes 和公共 skills 目录里的 Agent skills。
+[English](./README.md) | 中文
 
-中文 | [English](./README.md)
+## 项目简介
 
-我做这个工具的原因很简单：本地 skills 越来越多之后，管理会变得很麻烦。你很难一眼看出来哪些还在用，哪些是重复的，哪些是系统内置的，哪些很久没用过，哪些可以更新，哪些删除前需要谨慎一点。
+Agent Skill Manager 把本机安装的 Skills 集中到一个管理页面。适合同时使用多个 Agent、经常安装 Skills，希望查找技能、检查更新、安装新内容和恢复误删文件的用户。
 
-Agent Skill Manager 做的事情就是把这些信息拉到一个本地后台里。它会扫描本地目录，按名称合并不同平台里的同一个 skill，展示版本、来源、状态、健康分、使用次数，并提供更新、停用、删除和导出报告这些日常管理操作。
+本地 Web 后台是主要入口，也可以让 Agent 调用 Python CLI。两者共用 SQLite 数据库和维护逻辑，运行管理器本身不需要模型 API。
 
-![Agent Skill Manager 管理后台](https://raw.githubusercontent.com/chemny/agent-skill-manager/main/assets/agent-skill-manager-dashboard.png)
+## 效果预览
 
-## 可以用它做什么？
+![本地管理后台的 Skills 列表，使用示例数据](assets/skill-manager-preview.png)
 
-- 在一个表格里查看所有本地 skills，不用挨个翻隐藏目录。
-- 查看每个 skill 属于哪个 Agent 平台：Codex、Claude Code、OpenClaw、Hermes 或公共目录。
-- 找出重复 skills 和本地版本不一致的副本。
-- 从本地 session logs 中导入真实的 30 天使用次数。
-- 根据状态、metadata 和文件结构计算健康分。
-- 添加和管理自己的 skills 来源目录。
-- 从 GitHub、GitLab、Gitee、GitCode、skills.sh 或 zip 链接安装新的 skills。
-- 导出一份简单的管理报告。
-- 检查可能的更新，并在本地版本不一致时统一到较新版本。
-- 对 skills 做停用或删除，删除前会确认并备份。
+## 核心功能
 
-## 适合谁？
+| 功能 | 可以做什么 |
+| --- | --- |
+| 统一列表 | 合并展示同一 Skill 的 Agent 关联，查看安装时间、占用空间、分类和更新状态；磁盘上的独立安装目录仍各自保留。 |
+| 检查更新 | 针对所有可检查的已安装 Skills 比对登记来源；成功结果在 15 分钟内复用，失败项可重试，并遵守来源服务的限流规则。 |
+| 安装 Skills | 支持公开仓库链接、HTTPS ZIP 链接、本地文件夹和 ZIP，选择 Agent 与安装位置后安装。 |
+| Agent 目录 | 使用预设添加 Agent，自动匹配操作系统的默认路径；也可在设置中登记自定义目录。 |
+| 备份与恢复 | 创建、恢复备份；删除的备份和卸载的 Skills 进入回收站，回收站项目经确认后才永久删除。 |
+| 分类与标签 | 给 Skills 设置基础分类和标签，直接筛选列表、点击表头排序。 |
+| 操作记录 | 查看失败或中断的操作，需要排查时导出诊断记录。 |
 
-这个工具主要适合本地 skills 已经比较多的人。
+## 安装
 
-如果你符合下面几种情况，它会比较有用：
+### 配置要求
 
-- 同时使用多个 Agent 平台；
-- 经常安装、修改或自己写 skills；
-- 想清理旧 skills，但不想靠猜；
-- 想快速知道某个 skill 到底装在哪些目录；
-- 需要一个中英文都能用的本地管理界面。
+使用支持本地 Skills 和本地命令执行的 Agent。Codex、Claude Code 可读取根目录的 `SKILL.md` 并调用 Python 入口。
 
-如果你只有很少几个 skills，直接用文件管理器可能就够了。
+| 项目 | 要求 |
+| --- | --- |
+| Python | Python 3.10 或以上；核心使用标准库，包括 SQLite。 |
+| 浏览器 | 使用本地管理后台需要较新的桌面浏览器。 |
+| Git 与网络 | Git 来源检查和更新需要 Git；公开来源服务可能限制请求次数。 |
+| 文件选择器 | macOS 使用系统选择器，其他平台在可用时使用 Python Tkinter；也可手动填写本地路径。 |
+| 操作系统 | 已在 macOS 测试。Windows 路径与适配代码经过审查及模拟测试，但尚未进行 Windows 真机测试；Windows 不支持自动创建共享链接。 |
 
-## 它是怎么工作的？
+### 快速安装
 
-Agent Skill Manager 会维护一份自己的本地 registry。扫描时，它会读取常见的本地 skills 目录，找到像 skill 的文件夹，把同名副本合并，尽量导入使用记录，然后把结果写入 SQLite。
+直接对 Agent 说：
 
-管理后台只是这份本地 registry 的可视化入口。每次重新扫描，安装副本、使用次数、健康分、来源标签和更新提示都会一起刷新。更新和删除会操作真实本地文件；停用会把可编辑 skill 移到对应的 `.disabled` 目录，启用会再移回原目录。
-
-默认会扫描这些目录：
-
-- 公共目录：`~/.agents/skills`
-- Codex：`~/.codex/skills`、`~/.codex/plugins/cache`
-- Claude Code：`~/.claude/commands`、`~/.claude/agents`、项目内 `.claude/commands`、项目内 `.claude/agents`
-- OpenClaw：`~/.openclaw/skills`、`~/.openclaw/plugins`、`~/.openclaw/tools`、`~/.openclaw/workflows`
-- Hermes：`~/.hermes`
-
-第一次运行后，你可以在本地后台里调整这些来源目录。
-
-## 怎么安装？
-
-像安装普通本地 skill 一样直接安装：
-
-```bash
-git clone https://github.com/chemny/agent-skill-manager.git ~/.agents/skills/skill-manager
+```text
+把 https://github.com/chemny/skill-manager 安装为本地 Skill。
+先检查运行环境，安装后确认你能读取并运行它。
 ```
 
-安装完成后，重新打开一个 Agent 会话，然后像使用其他 skills 一样直接使用。
+Agent 应告知实际安装位置，以及命令行入口是否可用。
 
 ## 快速开始
 
-直接问 Agent：
+```text
+用 skill-manager 扫描我已安装的 Skills，并打开管理后台。
+```
+
+管理页面会在本机打开。先查看“全部”，再选择 Agent 或筛选列表。“刷新”同步清单，“扫描”发现已配置目录中的变化。
+
+## 使用示例
+
+### 检查更新
 
 ```text
-使用 skill-manager 扫描我的本地 skills，并打开管理后台。
+检查我所有已安装 Skills 的更新，列出有新版本的项目。
 ```
 
-如果你想在终端里直接运行：
+检查不会自动安装。更新使用登记的来源，替换前备份本地内容；缺失来源或查询失败不会被当作“已是最新”。
 
-```bash
-python3 ~/.agents/skills/skill-manager/scripts/agent_skill_manager.py scan
-python3 ~/.agents/skills/skill-manager/scripts/agent_skill_manager.py web --host 127.0.0.1 --port 8765 --open
-```
-
-第一条命令会扫描本地 skills，第二条命令会打开管理后台。
-
-## 常用命令
-
-```bash
-python3 scripts/agent_skill_manager.py scan
-python3 scripts/agent_skill_manager.py list
-python3 scripts/agent_skill_manager.py search skill-manager
-python3 scripts/agent_skill_manager.py show skill-manager
-python3 scripts/agent_skill_manager.py usage --days 30
-python3 scripts/agent_skill_manager.py health
-python3 scripts/agent_skill_manager.py report
-python3 scripts/agent_skill_manager.py web --open
-```
-
-类 Unix 系统可以用：
-
-```bash
-bin/asm scan
-bin/asm web --open
-```
-
-Windows 可以用：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File ".\scripts\start-manager.ps1"
-```
-
-也可以直接双击 `scripts\start-manager.cmd`。
-
-Windows 启动脚本会自动按 `py -3`、`python`、`python3` 的顺序寻找 Python 3.9+，启动本地服务后打开 `http://127.0.0.1:8765/`。
-
-第一次在 Windows 上使用时，可以先运行：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File ".\scripts\install-windows.ps1"
-```
-
-## 管理后台
-
-本地 HTML 后台是最主要的使用入口。它支持：
-
-- 中英文切换；
-- skills 扫描和刷新；
-- 按等级、平台、状态、来源筛选；
-- 只按名称搜索；
-- 查看详情和使用记录；
-- 管理自定义来源目录；
-- 管理更新渠道，查看各渠道搜索、检查、下载、更新、成功率和失败情况；
-- 从 GitHub、GitLab、Gitee、GitCode、skills.sh 或 zip 链接安装 skill；
-- 带 24 小时缓存的智能扫描，可按全量、平台或等级范围运行；
-- 本地版本统一；
-- 通过 `.disabled` 目录实现真实启用和停用；
-- 带确认和备份的删除；
-- 导出报告。
-
-## 更新来源顺序
-
-点击更新或运行智能扫描时，它会按这个顺序找新版本：
-
-1. 先读 24 小时内的本地缓存，避免反复请求远程服务。
-2. 再查 skill 自己绑定的仓库来源：GitHub、GitLab、Gitee、GitCode 或 skills.sh 指向的 GitHub 仓库。
-3. 如果 GitHub 访问失败、超时或限流，会尝试 GitCode 的 GitHub 镜像；镜像只有验证可用后才会使用。
-4. 如果没有绑定来源，或者绑定来源暂时不可用，再用 SkillsMP 搜索。
-5. SkillsMP 没有结果或请求失败时，继续用 `find-skills` / skills.sh 搜索。
-6. 远程都找不到时，最后比较本地同名副本，提示是否统一到本地最高版本。
-
-某个远程来源失败不会直接说明 skill 有问题。比如 GitHub 限流、SkillsMP 超时，都会继续尝试下一条来源。GitCode 镜像只作为 GitHub 的下载加速 fallback，原始来源仍记录为 GitHub。
-
-“更多 -> 更新渠道管理”会记录每个渠道的搜索、检查、下载、更新、成功和失败次数。渠道会按启用状态、手动优先级、成功率和成功次数综合评分；同类搜索渠道会优先使用评分更高的渠道。新增 `mirror` 类型渠道时，可以在地址中使用 `{owner}`、`{repo}`、`{prefix2}`、`{prefix3}` 模板，用作 GitHub 镜像 fallback。
-
-启动后台：
-
-```bash
-python3 scripts/agent_skill_manager.py web --host 127.0.0.1 --port 8765 --open
-```
-
-## 运行时文件
-
-运行时数据不会放进这个仓库。
-
-- 数据库：`~/.agent-skill-manager/skills.db`
-- 配置：`~/.agent-skill-manager/config.json`
-- 报告：`~/.agent-skill-manager/reports/`
-- 备份：`~/.agent-skill-manager/backups/`
-- 日志：`~/.agent-skill-manager/logs/`
-
-如果想临时使用另一套运行目录，可以设置 `ASM_HOME`：
-
-```bash
-ASM_HOME=/tmp/asm-test python3 scripts/agent_skill_manager.py list
-```
-
-## 兼容性
-
-Agent Skill Manager 设计上兼容 Codex、Claude Code、OpenClaw、Hermes 和公共 skills 目录。
-
-它主要依赖本地文件扫描、`SKILL.md` metadata、SQLite 和 Python 标准库。各平台路径只是默认值，不是硬性要求。
-
-Windows 支持主要基于 PowerShell 和 Python 3.9+：
-
-- `scripts\start-manager.ps1`：启动后台并打开浏览器。
-- `scripts\start-manager.cmd`：可双击启动。
-- `scripts\skill-manager.ps1`：把操作转发给 Python CLI，并自动探测 `py -3`、`python` 或 `python3`。
-- `scripts\install-windows.ps1`：检查 Python，创建默认 `%USERPROFILE%\.agents\skills` 目录，并打印启动命令。
-- Git 不是扫描和打开后台的必需依赖，但部分更新和安装来源需要系统里已安装 Git，并能在 PATH 中调用。
-
-## 安全边界
-
-这个工具默认比较保守：
-
-- 内置 skills 和插件缓存 skills 默认只观察；
-- 停用会把可编辑 skill 移出启用目录，放到对应的 `.disabled` 目录；
-- 删除前会确认，并尽量先备份可编辑文件；
-- 远程更新检查有 24 小时缓存；
-- 找不到远程更新时，仍然可以比较本地副本并统一版本；
-- 本地数据库、报告、备份、日志和使用记录不会提交到 Git。
-
-## 更新这个 skill
-
-如果你是用 Git 安装的：
-
-```bash
-cd ~/.agents/skills/skill-manager
-git pull
-```
-
-更新后重新开一个 Agent 会话即可。
-
-## 仓库结构
+### 安装一个 Skill
 
 ```text
-skill-manager/
-├── README.md
-├── README.zh.md
-├── CHANGELOG.md
-├── LICENSE
-├── SKILL.md
-├── assets/
-│   └── agent-skill-manager-dashboard.png
-├── bin/
-│   └── asm
-└── scripts/
-    ├── agent_skill_manager.py
-    ├── release_check.sh
-    └── skill-manager.ps1
+把这个 Skill 安装给 Codex 使用：<仓库链接或本地文件夹>。
 ```
 
-## 发布检查
+管理器先识别内容和安装位置，再写入文件，不会静默覆盖已经存在的安装目标。
 
-```bash
-./scripts/release_check.sh
+### 备份与恢复
+
+```text
+备份我已安装的 Skills，方便之后恢复。
 ```
 
-它会检查 Python 语法、内嵌 JavaScript、临时运行目录创建，以及仓库里有没有残留 Python 缓存文件。
+备份出现在“备份”列表中。删除备份后进入“回收站”，永久删除在回收站中执行。网页中的删除类操作会弹出确认框；恢复到已有不同内容的位置时，需要选择替换，并先备份原有内容。
 
-## 许可证
+### 管理另一个 Agent
 
-MIT
+```text
+把 OpenCode 添加到管理器，显示它已安装的 Skills。
+```
+
+预设会使用当前操作系统对应的默认目录。移除 Agent 管理配置不会删除它的 Skills 文件。共享目录可能供多个 Agent 使用，卸载其中的共享内容会影响这些 Agent。
+
+## 工作原理
+
+管理器扫描配置的目录，在 SQLite 中记录安装项目、来源证据、更新结果和操作历史。页面复用 15 分钟内的清单数据，备份列表缓存一小时；写入操作完成后刷新受影响的记录。
+
+| 组件 | 职责 |
+| --- | --- |
+| `SKILL.md` | Agent 使用管理器时遵循的指令。 |
+| `scripts/agent_skill_manager.py` 与 `bin/asm` | Python CLI、本地 Web 服务和 macOS/POSIX 命令包装器；Windows 可直接调用 Python 脚本。 |
+| `assets/maintenance.html` | 清单、更新、安装、备份、回收站和设置界面。 |
+| `scripts/` 内的维护模块 | 来源检查、内置归属判断、文件校验、备份、任务执行与恢复。 |
+
+服务只监听本机回环地址，使用本地请求令牌。默认数据保存在 `~/.agent-skill-manager`，可用 `ASM_HOME` 指定隔离的数据目录。来源检索和更新检查会请求配置的服务。诊断记录可能包含本机路径，分享前请核对内容。
+
+内置归属依据实际证据判断，不把整个 Agent 目录一律视为不可操作。清理建议仅供参考：版本较旧或存在同名副本，都不足以证明内容可以安全删除。
+
+## 目录结构
+
+```text
+SKILL.md                         Agent 使用指令
+scripts/                         CLI、服务与维护模块
+bin/asm                          POSIX 命令包装器
+assets/maintenance.html          管理后台
+assets/skill-manager-preview.png 示例数据截图
+references/                      使用、接口与图标来源文档
+tests/                           隔离自动化测试
+README.md / README.zh.md         英文与中文介绍
+LICENSE                          项目许可
+```
+
+详细信息见[维护命令](references/maintenance.md)、[Web API](references/web-api.md)、[Agent 图标来源](references/agent-icons.md)和[中文用途目录](references/purpose-zh.json)。开发变更记录在 [CHANGELOG.md](CHANGELOG.md)。
+
+## 许可
+
+项目代码采用 [MIT 许可](LICENSE)。第三方图标保留各自声明，见[图标来源与许可](references/agent-icons.md)。产品名称和标志用于识别对应产品，不代表获得其背书。
+
+## 关于我
+
+项目维护于 [chemny/skill-manager](https://github.com/chemny/skill-manager)。可通过仓库的 [Issues](https://github.com/chemny/skill-manager/issues)反馈可复现的问题或改进建议。

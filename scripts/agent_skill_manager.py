@@ -32,6 +32,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
+import secrets
+import maintenance
 import zipfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -45,12 +47,13 @@ REPORT_DIR = APP_DIR / "reports"
 BACKUP_DIR = APP_DIR / "backups"
 LOG_DIR = APP_DIR / "logs"
 VERSION_PART_RE = re.compile(r"^\d+(?:\.\d+)+(?:[-+][A-Za-z0-9_.-]+)?$")
-SKILL_MD_PATH_RE = re.compile(r"(?:~|/Users/[^\s\"'`<>]+|/opt/[^\s\"'`<>]+|[A-Za-z]:[\\/][^\s\"'`<>]+|\\\\[^\s\"'`<>]+)[^\s\"'`<>]*?[\\/]SKILL\.md")
+SKILL_MD_PATH_RE = re.compile(r"(?:~|/|[A-Za-z]:[\\/]|\\\\)[^\s\"'`<>]*?[\\/]SKILL\.md")
 REMOTE_UPDATE_CACHE_TTL = dt.timedelta(hours=1)
 SMART_UPDATE_ITEM_TIMEOUT_SECONDS = 45
 SMART_UPDATE_MAX_WORKERS = 8
 SMART_UPGRADE_JOBS: Dict[str, Dict[str, Any]] = {}
 SMART_UPGRADE_LOCK = threading.Lock()
+SCAN_LOCK = threading.Lock()
 
 
 class SmartUpgradeCanceled(Exception):
@@ -61,8 +64,10 @@ UPDATE_BUTTON_DISABLED_STATUSES = {"updated", "latest", "no_cloud", "remote_erro
 GITCODE_GH_MIRROR_BASE = "https://gitcode.com/gh_mirrors"
 
 DEFAULT_UPDATE_CHANNELS: List[Dict[str, Any]] = [
+    {"name": "skillhub", "label": "腾讯 SkillHub", "kind": "skillhub", "base_url": "https://api.skillhub.cn", "priority": 60, "builtin": True},
+    {"name": "skills-sh", "label": "Vercel skills.sh", "kind": "skills-sh", "base_url": "https://skills.sh", "priority": 75, "builtin": True},
     {"name": "github", "label": "GitHub", "kind": "canonical", "base_url": "https://api.github.com", "priority": 80, "builtin": True},
-    {"name": "gitcode", "label": "GitCode", "kind": "mirror", "base_url": GITCODE_GH_MIRROR_BASE, "priority": 70, "builtin": True},
+    {"name": "gitcode", "label": "GitCode", "kind": "repository", "base_url": "https://gitcode.com", "priority": 70, "builtin": True},
     {"name": "gitee", "label": "Gitee", "kind": "repository", "base_url": "https://gitee.com", "priority": 65, "builtin": True},
     {"name": "gitlab", "label": "GitLab", "kind": "repository", "base_url": "https://gitlab.com", "priority": 55, "builtin": True},
     {"name": "skillsmp", "label": "SkillsMP", "kind": "discovery", "base_url": "https://skillsmp.com", "priority": 50, "builtin": True},
@@ -89,8 +94,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "claude_code": {
             "enabled": True,
             "roots": [
+                "~/.claude/skills",
                 "~/.claude/commands",
                 "~/.claude/agents",
+                ".claude/skills",
                 ".claude/commands",
                 ".claude/agents",
             ],
@@ -107,7 +114,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "hermes": {
             "enabled": True,
             "roots": [
-                "~/.hermes",
+                "~/.hermes/skills",
             ],
         },
     },
@@ -162,6 +169,14 @@ def load_config() -> Dict[str, Any]:
             merged[key].update(value)
         else:
             merged[key] = value
+    # One-time path migration; subsequent user customization is respected.
+    if int(data.get("scan_schema", 1)) < 2:
+        settings = merged.get("platforms", {}).get("claude_code", {})
+        roots = settings.get("roots", [])
+        for root in ("~/.claude/skills", ".claude/skills"):
+            if root not in roots:
+                roots.append(root)
+        merged["scan_schema"] = 2
     return merged
 
 
@@ -171,7 +186,7 @@ def save_config(config: Dict[str, Any]) -> None:
 
 
 def expand_root(root: str) -> Path:
-    return Path(os.path.expandvars(root)).expanduser().resolve()
+    return maintenance.absolute(root)
 
 
 def disabled_root_for(root: Path) -> Path:
@@ -209,13 +224,13 @@ def parse_simple_yaml(text: str) -> Dict[str, Any]:
             i += 1
             continue
         key, raw = m.group(1), m.group(2).strip()
-        if raw in ("|", ">"):
+        if re.fullmatch(r"[|>][+-]?", raw):
             parts: List[str] = []
             i += 1
             while i < len(lines) and (lines[i].startswith(" ") or not lines[i].strip()):
                 parts.append(lines[i].strip())
                 i += 1
-            data[key] = "\n".join(parts).strip() if raw == "|" else " ".join(parts).strip()
+            data[key] = "\n".join(parts).strip() if raw.startswith("|") else " ".join(parts).strip()
             continue
         if raw == "":
             items: List[str] = []
@@ -270,6 +285,9 @@ def stable_id(platform: str, kind: str, path: Path, name: str) -> str:
 
 
 def infer_version(folder: str, metadata: Dict[str, Any]) -> str:
+    nested = metadata.get("metadata")
+    if isinstance(nested, dict) and nested.get("version") and not metadata.get("version"):
+        return str(nested["version"])
     if metadata.get("version"):
         return str(metadata["version"])
     match = re.search(r"(\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?)$", folder)
@@ -317,10 +335,8 @@ def remote_source_from_url(url: str) -> str:
 
 
 def normalize_source(metadata: Dict[str, Any], path: Path) -> str:
-    text = str(path)
-    if metadata.get("builtin") is True or metadata.get("type") == "builtin":
-        return "builtin"
-    if is_builtin_path(path):
+    from component_ownership import classify
+    if classify(path)['kind'] == 'system':
         return "builtin"
     for key in ("github_url", "repository", "homepage", "update_url", "source_url", "remote_url"):
         source = remote_source_from_url(metadata_url(metadata, key))
@@ -330,21 +346,9 @@ def normalize_source(metadata: Dict[str, Any], path: Path) -> str:
 
 
 def is_builtin_path(path: Path | str) -> bool:
-    text = str(path).replace("\\", "/")
-    markers = (
-        "/.codex/plugins/cache/",
-        "/.codex/skills/.system/",
-        "/.claude/plugins/cache/",
-        "/.claude/skills/.system/",
-        "/.claude-code/plugins/cache/",
-        "/.claude-code/skills/.system/",
-        "/.openclaw/plugins/cache/",
-        "/.openclaw/skills/.system/",
-        "/.hermes/plugins/cache/",
-        "/.hermes/skills/.system/",
-        "/.hermes/hermes-agent/",
-    )
-    return any(marker in text for marker in markers)
+    # Compatibility guard for legacy write paths, not a source classification.
+    from component_ownership import classify
+    return classify(path)['read_only']
 
 
 def management_scope_for_row(row: Dict[str, Any]) -> str:
@@ -354,8 +358,12 @@ def management_scope_for_row(row: Dict[str, Any]) -> str:
     metadata = row.get("metadata") or {}
     if not isinstance(metadata, dict):
         metadata = {}
-    if source == "builtin" or is_builtin_path(path) or metadata.get("builtin") is True or metadata.get("type") == "builtin":
-        return "builtin_observe_only"
+    from component_ownership import classify
+    ownership = classify(path)
+    if ownership['read_only']:
+        return 'builtin_observe_only' if ownership['kind'] == 'system' else 'package_observe_only'
+    if source == 'builtin':
+        source = normalize_source(metadata, Path(path))
     if source in ("github", "gitlab", "gitee", "gitcode", "skills.sh", "skillsmp", "bitbucket", "vercel") or github_url:
         return "managed_remote"
     if source == "local":
@@ -540,6 +548,9 @@ class Registry:
 
     def ensure_default_update_channels(self) -> None:
         stamp = now_iso()
+        old_gitcode = self.conn.execute("select 1 from update_channels where name='gitcode' and builtin=1 and kind='mirror' and base_url=?", (GITCODE_GH_MIRROR_BASE,)).fetchone()
+        if old_gitcode:
+            self.conn.execute("update update_channels set kind='repository', base_url='https://gitcode.com' where name='gitcode'", ())
         for channel in DEFAULT_UPDATE_CHANNELS:
             existing = self.conn.execute("select name from update_channels where name=?", (channel["name"],)).fetchone()
             if existing:
@@ -724,6 +735,7 @@ class Registry:
               github_ref=excluded.github_ref,
               github_path=excluded.github_path,
               health=excluded.health,
+              status=excluded.status,
               last_scanned_at=excluded.last_scanned_at,
               local_updated_at=excluded.local_updated_at,
               metadata_json=excluded.metadata_json
@@ -750,26 +762,17 @@ class Registry:
         )
 
     def prune_to_scan(self, caps: Sequence[Dict[str, Any]]) -> None:
-        platforms = sorted({cap["platform"] for cap in caps})
-        paths = sorted({cap["path"] for cap in caps})
-        if not platforms:
-            return
-        platform_marks = ",".join("?" for _ in platforms)
-        if not paths:
-            self.conn.execute(f"delete from capabilities where platform in ({platform_marks})", platforms)
-            return
-        path_marks = ",".join("?" for _ in paths)
-        self.conn.execute(
-            f"delete from capabilities where platform in ({platform_marks}) and path not in ({path_marks})",
-            [*platforms, *paths],
-        )
+        # Keep missing records and their history; partial scans must never erase them.
+        for row in self.conn.execute("select id,path from capabilities").fetchall():
+            if not os.path.lexists(row["path"]):
+                self.conn.execute("update capabilities set health='missing' where id=?", (row["id"],))
 
     def refresh_usage_counts(self) -> None:
         now = dt.datetime.now(dt.timezone.utc).astimezone()
         for days, column in ((7, "usage_7d"), (30, "usage_30d")):
             since = (now - dt.timedelta(days=days)).isoformat(timespec="seconds")
             rows = self.conn.execute(
-                "select capability_id, count(*) c from usage_events where occurred_at >= ? group by capability_id",
+                "select capability_id, count(*) c from usage_events where julianday(occurred_at) >= julianday(?) group by capability_id",
                 (since,),
             ).fetchall()
             self.conn.execute(f"update capabilities set {column}=0")
@@ -782,9 +785,10 @@ class Registry:
             """
             update capabilities
             set last_used_at = (
-                select max(occurred_at)
+                select occurred_at
                 from usage_events
                 where usage_events.capability_id = capabilities.id
+                order by julianday(occurred_at) desc limit 1
             )
             where exists (
                 select 1 from usage_events where usage_events.capability_id = capabilities.id
@@ -806,15 +810,19 @@ class Registry:
         return self.conn.execute(query, args).fetchall()
 
     def find_one(self, name_or_id: str, platform: str = "") -> Optional[sqlite3.Row]:
-        clauses = ["(id=? or name=? or path like ?)"]
-        args: List[Any] = [name_or_id, name_or_id, f"%{name_or_id}%"]
-        if platform:
-            clauses.append("platform=?")
-            args.append(platform)
-        return self.conn.execute(
-            "select * from capabilities where " + " and ".join(clauses) + " order by length(path) limit 1",
-            args,
-        ).fetchone()
+        scope = 'platform=? and ' if platform else ''
+        args = (platform,) if platform else ()
+        query = 'select * from capabilities where ' + scope
+        matches = self.conn.execute(query + '(id=? or path=?)', (*args, name_or_id, name_or_id)).fetchall()
+        if not matches:
+            rows = self.conn.execute(query + 'name=?', (*args, name_or_id)).fetchall()
+            matches = [r for r in rows if r['health'] not in ('missing','not-scanned')] or rows
+        if not matches:
+            matches = self.conn.execute(query + "health not in ('missing','not-scanned') and instr(path,?)>0", (*args, name_or_id)).fetchall()
+        if len(matches) > 1:
+            options = "; ".join(f"{r['id']} ({r['path']})" for r in matches[:10])
+            raise ValueError(f"Ambiguous skill; choose its ID: {options}")
+        return matches[0] if matches else None
 
     def set_status(self, name_or_id: str, status: str, platform: str = "") -> sqlite3.Row:
         cap = self.find_one(name_or_id, platform)
@@ -1022,9 +1030,17 @@ class Registry:
         if action == "add":
             if not name:
                 raise ValueError("Channel name is required.")
+            existing = self.conn.execute("select builtin, deleted from update_channels where name=?", (name,)).fetchone()
+            if existing and not existing['deleted']:
+                raise ValueError("更新源名称已存在，请使用其他名称")
+            if existing and existing['builtin']:
+                raise ValueError("不能覆盖内置更新源")
             label = str(payload.get("label") or name)
             kind = str(payload.get("kind") or "custom")
-            base_url = str(payload.get("base_url") or "")
+            if kind not in ('skillhub', 'git'):
+                raise ValueError("请选择 SkillHub API 或公开 Git 仓库")
+            from update_providers import public_url
+            base_url = public_url(payload.get("base_url"))
             priority = int(payload.get("priority") or 40)
             self.conn.execute(
                 """
@@ -1045,6 +1061,9 @@ class Registry:
             enabled = 1 if payload.get("enabled") else 0
             self.conn.execute("update update_channels set enabled=?, updated_at=? where name=?", (enabled, stamp, name))
         elif action == "delete":
+            row = self.conn.execute("select builtin from update_channels where name=?", (name,)).fetchone()
+            if row and row['builtin']:
+                raise ValueError("内置渠道可以停用，不能删除")
             self.conn.execute("update update_channels set enabled=0, deleted=1, updated_at=? where name=?", (stamp, name))
         else:
             raise ValueError(f"Unsupported channel action: {action}")
@@ -1257,31 +1276,26 @@ def discover_capabilities(config: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def source_entries() -> List[Dict[str, Any]]:
+    from skill_locations import locations
     config = load_config()
     registry = Registry()
     rows = registry.all_capabilities()
     entries: List[Dict[str, Any]] = []
-    seen: set[Tuple[str, str]] = set()
-    for platform, settings in config.get("platforms", {}).items():
-        enabled = bool(settings.get("enabled", True))
-        for root in settings.get("roots", []):
-            expanded_path = expand_root(root)
-            expanded = str(expanded_path)
-            key = (platform, expanded)
-            if key in seen:
-                continue
-            seen.add(key)
-            count = len([row for row in rows if str(row["path"]).startswith(expanded)])
-            entries.append({"platform": platform, "root": root, "expanded": expanded, "enabled": enabled, "exists": expanded_path.exists(), "count": count})
+    descriptors, warnings = locations(config)
+    for entry in descriptors:
+        root = Path(entry['expanded'])
+        entry['count'] = len({str(Path(row['path']).resolve()) for row in rows if row['platform'] == entry['platform'] and root in Path(row['path']).parents and row['health'] != 'not-scanned'})
+        entry['warnings'] = warnings
+        entries.append(entry)
     return entries
 
 
-def update_source(action: str, platform: str, root: str, enabled: Optional[bool] = None) -> Dict[str, Any]:
+def update_source(action: str, platform: str, root: str, enabled: Optional[bool] = None, label: str = "") -> Dict[str, Any]:
     platform = platform or "shared"
     root = str(root or "").strip()
-    if platform not in DEFAULT_CONFIG["platforms"]:
-        raise ValueError(f"Unsupported platform: {platform}")
-    if not root:
+    if not re.fullmatch(r'[a-z][a-z0-9_-]{0,63}', platform):
+        raise ValueError("Agent 标识格式无效")
+    if not root and action != 'remove-agent':
         raise ValueError("Source root is required.")
     if action == "add" and not expand_root(root).is_dir():
         raise ValueError(f"Source root is not a valid directory: {root}")
@@ -1289,8 +1303,18 @@ def update_source(action: str, platform: str, root: str, enabled: Optional[bool]
     settings = config.setdefault("platforms", {}).setdefault(platform, {"enabled": True, "roots": []})
     roots = settings.setdefault("roots", [])
     if action == "add":
+        settings['enabled'] = True
+        settings['removed'] = False
+        if platform != 'shared':
+            settings.update(agent=True, added=True)
+            if label:
+                settings['label'] = str(label).strip()[:80]
         if root not in roots:
             roots.append(root)
+    elif action == 'remove-agent':
+        if platform == 'shared':
+            raise ValueError('自定义目录请逐项移除')
+        settings.update(enabled=False, added=False, removed=True, discover_defaults=False, roots=[])
     elif action == "remove":
         if root in roots:
             roots.remove(root)
@@ -1299,6 +1323,14 @@ def update_source(action: str, platform: str, root: str, enabled: Optional[bool]
     else:
         raise ValueError(f"Unsupported source action: {action}")
     save_config(config)
+    if action == 'remove-agent':
+        registry = Registry()
+        try:
+            if registry.conn.execute("select 1 from sqlite_master where name='maintenance_inventory_cache'").fetchone():
+                registry.conn.execute('update maintenance_inventory_cache set payload=null,generation=generation+1 where id=1')
+                registry.conn.commit()
+        finally:
+            registry.conn.close()
     Registry().log_operation(f"source-{action}", f"{platform}:{root}", {"platform": platform, "root": root, "enabled": settings.get("enabled", True)})
     return {"sources": source_entries(), "config_path": str(CONFIG_PATH)}
 
@@ -1326,6 +1358,43 @@ def pick_directory() -> Dict[str, Any]:
     selected = Path(path).expanduser().resolve()
     if not selected.is_dir():
         raise ValueError(f"Selected path is not a directory: {selected}")
+    return {"path": str(selected)}
+
+
+def pick_install_source(kind: str) -> Dict[str, Any]:
+    if kind not in ("file", "folder"):
+        raise ValueError("Invalid local source picker kind")
+    if kind == "folder":
+        try:
+            return pick_directory()
+        except ValueError as exc:
+            if str(exc) == "Directory selection was cancelled.":
+                return {"cancelled": True}
+            raise
+    if sys.platform == "darwin":
+        result = subprocess.run(
+            ["osascript", "-e", 'POSIX path of (choose file with prompt "Choose Skill ZIP file" of type {"zip"})'],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode != 0:
+            if "-128" in result.stderr:
+                return {"cancelled": True}
+            raise ValueError("File picker is unavailable: " + result.stderr.strip())
+        path = result.stdout.strip()
+    else:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            path = filedialog.askopenfilename(title="Choose Skill ZIP file", filetypes=[("ZIP files", "*.zip")])
+        finally:
+            root.destroy()
+        if not path:
+            return {"cancelled": True}
+    selected = Path(path).expanduser().resolve()
+    if not selected.is_file() or selected.suffix.lower() != ".zip":
+        raise ValueError("Please select a ZIP file")
     return {"path": str(selected)}
 
 
@@ -1413,15 +1482,15 @@ def is_catalog_or_instruction(value: Any) -> bool:
 def tool_event_kind(node: Dict[str, Any]) -> str:
     type_value = str(node.get("type") or node.get("kind") or "").lower()
     name_value = str(node.get("name") or node.get("tool") or node.get("toolName") or node.get("tool_name") or "").lower()
-    if type_value in ("toolcall", "tool_call", "tool_use", "function_call"):
-        if name_value in ("read", "read_file", "filesystem.read_file", "functions.exec_command", "exec_command", "bash", "shell"):
+    if type_value in ("toolcall", "tool_call", "tool_use", "function_call", "custom_tool_call"):
+        if name_value in ("read", "read_file", "filesystem.read_file", "functions.exec_command", "exec_command", "exec", "bash", "shell"):
             return "high" if "read" in name_value else "shell"
         return "medium"
     if type_value == "response_item" and name_value:
         return "medium"
     if name_value in ("read", "read_file", "filesystem.read_file"):
         return "high"
-    if name_value in ("functions.exec_command", "exec_command", "bash", "shell"):
+    if name_value in ("functions.exec_command", "exec_command", "exec", "bash", "shell"):
         return "shell"
     return ""
 
@@ -1482,28 +1551,71 @@ def usage_log_source(path: Path) -> str:
     return "session-log"
 
 
-def usage_log_files(days: int = 45) -> List[Path]:
+def usage_log_roots(extra=None):
     home = Path.home()
-    roots = [
-        home / ".codex" / "sessions",
-        home / ".codex" / "archived_sessions",
-        home / ".claude" / "projects",
-        home / ".openclaw" / "agents",
-        home / ".hermes" / "sessions",
-        home / ".hermes" / "logs",
-    ]
-    cutoff = dt.datetime.now(dt.timezone.utc).timestamp() - days * 86400
-    files: List[Path] = []
-    for root in roots:
-        if not root.exists():
-            continue
-        for path in root.rglob("*.jsonl"):
-            try:
-                if path.stat().st_mtime >= cutoff:
-                    files.append(path)
-            except OSError:
-                continue
+    codex = Path(os.environ.get('CODEX_HOME', str(home/'.codex'))).expanduser()
+    claude = Path(os.environ.get('CLAUDE_CONFIG_DIR', str(home/'.claude'))).expanduser()
+    hermes = Path(os.environ.get('HERMES_HOME', str(home/'.hermes'))).expanduser()
+    claw = Path(os.environ.get('OPENCLAW_STATE_DIR', str(home/'.openclaw'))).expanduser()
+    roots = [('codex',codex/'sessions'),('codex',codex/'archived_sessions'),
+             ('claude_code',claude/'projects'),('openclaw',claw/'agents'),
+             ('hermes',hermes/'sessions'),('hermes',hermes/'logs')]
+    if extra is not None:
+        if not isinstance(extra,list) or len(extra)>12: raise ValueError('Invalid log locations')
+        for entry in extra:
+            if not isinstance(entry,dict) or entry.get('agent') not in ('codex','claude_code','hermes','openclaw'):
+                raise ValueError('Choose a supported Agent')
+            path = Path(entry.get('path','')).expanduser()
+            if not path.is_absolute() or not path.is_dir(): raise ValueError('Log location must be an existing absolute directory')
+            roots.append((entry['agent'],path))
+    return roots
+
+
+def usage_log_files(days: int = 45, roots=None) -> List[Path]:
+    # Inspect JSONL logs only; file modification age cannot prove event age.
+    files = set()
+    for _, root in usage_log_roots(roots):
+        if not root.exists(): continue
+        for path in root.rglob('*.jsonl'):
+            if path.is_file() and not path.is_symlink(): files.add(path)
     return sorted(files)
+
+
+def explicit_skill_events(event, skill_paths, agent, cwd=None):
+    """Named invocation only from a Skill tool event; prose/name mentions do not count."""
+    found = []
+    if is_catalog_or_instruction(event): return found
+    rows = {row['id']:row for row in skill_paths.values()}
+    for node in iter_dicts(event):
+        kind = str(node.get('type') or '').lower()
+        tool = str(node.get('name') or node.get('tool') or node.get('tool_name') or '').lower()
+        if kind not in ('tool_use','tool_call','function_call','toolcall') or tool not in ('skill','use_skill','invoke_skill'):
+            continue
+        args = node.get('input') or node.get('arguments') or {}
+        if isinstance(args,str):
+            try: args=json.loads(args)
+            except ValueError: continue
+        if not isinstance(args,dict): continue
+        name = args.get('skill') or args.get('name')
+        if not isinstance(name,str): continue
+        matches = [r for r in rows.values() if r['name']==name and r['platform']==agent]
+        actual = {str(Path(r['path']).resolve()) for r in matches}
+        if len(actual)==1 and matches:
+            found.append((str(Path(matches[0]['path']).resolve()/'SKILL.md'),'invocation'))
+    # Relative file reads require a recorded absolute working directory.
+    if cwd and Path(cwd).is_absolute():
+        for node in iter_dicts(event):
+            confidence=tool_event_kind(node)
+            if confidence!='high': continue
+            args=node.get('input') or node.get('arguments') or node
+            if isinstance(args,str):
+                try: args=json.loads(args)
+                except ValueError: continue
+            if not isinstance(args,dict): continue
+            value=args.get('file_path') or args.get('path')
+            if isinstance(value,str) and value.endswith('/SKILL.md') and not Path(value).is_absolute():
+                found.append((str((Path(cwd)/value).resolve()),'high'))
+    return found
 
 
 def capability_skill_path_map(registry: Registry) -> Dict[str, sqlite3.Row]:
@@ -1525,44 +1637,73 @@ def capability_skill_path_map(registry: Registry) -> Dict[str, sqlite3.Row]:
     return mapping
 
 
-def import_usage_from_logs(registry: Registry, days: int = 30) -> Dict[str, int]:
+def import_usage_from_logs(registry: Registry, days: int = 30, replay: bool = False, roots=None, progress=None) -> Dict[str, int]:
+    if days<1 or days>3650: raise ValueError('Use a positive log window of at most 3650 days')
+    locations = usage_log_roots(roots)
     skill_paths = capability_skill_path_map(registry)
     cutoff = dt.datetime.now(dt.timezone.utc).astimezone() - dt.timedelta(days=days)
     stats = {"files": 0, "lines": 0, "matched": 0, "inserted": 0}
     if not skill_paths:
         return stats
-    registry.conn.execute(
-        "delete from usage_events where source in (?, ?, ?, ?, ?)",
-        ("codex-log", "claude-log", "openclaw-log", "hermes-log", "session-log"),
-    )
-    for log_path in usage_log_files(days + 15):
+    registry.conn.execute("create table if not exists usage_log_cursors(path text primary key, inode text, offset integer, updated_at text)")
+    registry.conn.execute("create table if not exists usage_log_context(path text primary key, cwd text)")
+    stats["lookback_days"] = days
+    stats["coverage"] = "partial-session-log-evidence"
+    stats['agents'] = {a:{'directories':[], 'files':0, 'matched':0, 'inserted':0, 'unreadable':0} for a,_ in locations}
+    for agent,root in locations: stats['agents'][agent]['directories'].append({'path':str(root),'exists':root.is_dir()})
+    log_files = usage_log_files(days + 15, roots)
+    for file_index, log_path in enumerate(log_files):
+        if progress: progress(file_index, len(log_files), '读取日志文件；新增 %s 条记录' % stats['inserted'])
         stats["files"] += 1
-        source = usage_log_source(log_path)
+        agent = next((a for a,root in locations if root in log_path.parents),'unknown')
+        source = {'claude_code':'claude-log'}.get(agent,agent+'-log')
+        coverage = stats['agents'].get(agent)
+        if coverage: coverage['files'] += 1
+        cwd = None
         fallback_session = log_path.stem
         try:
-            handle = log_path.open("r", encoding="utf-8", errors="ignore")
+            fs = log_path.stat()
+            identity = f"{fs.st_dev}:{fs.st_ino}"
+            cursor = registry.conn.execute("select * from usage_log_cursors where path=?", (str(log_path),)).fetchone()
+            offset = int(cursor["offset"]) if not replay and cursor and cursor["inode"] == identity and fs.st_size >= int(cursor["offset"]) else 0
+            context = registry.conn.execute("select cwd from usage_log_context where path=?",(str(log_path),)).fetchone()
+            if offset and context: cwd=context[0]
+            handle = log_path.open("rb")
         except OSError:
+            stats["unreadable"] = stats.get("unreadable", 0) + 1
+            if coverage: coverage["unreadable"] += 1
             continue
         with handle:
-            for line in handle:
+            handle.seek(offset)
+            while True:
+                start = handle.tell()
+                raw = handle.readline()
+                if not raw:
+                    break
+                if not raw.endswith(b"\n"):
+                    handle.seek(start)  # Retry an incomplete final event on the next import.
+                    break
                 stats["lines"] += 1
-                line = line.strip()
-                if not line or "SKILL.md" not in line:
+                if progress and stats["lines"] % 1000 == 0:
+                    progress(file_index, len(log_files), "读取日志文件；已读 %s 行，新增 %s 条记录" % (stats["lines"],stats["inserted"]))
+                line = raw.decode("utf-8", errors="ignore").strip()
+                if not line:
                     continue
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                paths = extract_skill_md_paths_from_event(event)
+                for node in iter_dicts(event):
+                    value=node.get('cwd')
+                    if isinstance(value,str) and Path(value).is_absolute(): cwd=value
+                paths = list(dict.fromkeys(extract_skill_md_paths_from_event(event) + explicit_skill_events(event,skill_paths,agent,cwd)))
                 if not paths:
                     continue
                 occurred = first_event_time(event)
                 if not occurred:
-                    try:
-                        occurred = dt.datetime.fromtimestamp(log_path.stat().st_mtime, tz=dt.timezone.utc).astimezone()
-                    except OSError:
-                        occurred = dt.datetime.now(dt.timezone.utc).astimezone()
-                if occurred < cutoff:
+                    stats["undated_skipped"] = stats.get("undated_skipped", 0) + 1
+                    continue
+                if occurred < cutoff or occurred > dt.datetime.now(dt.timezone.utc):
                     continue
                 session_id = first_session_id(event, fallback_session)
                 occurred_iso = occurred.isoformat(timespec="seconds")
@@ -1571,19 +1712,16 @@ def import_usage_from_logs(registry: Registry, days: int = 30) -> Dict[str, int]
                     if not cap:
                         continue
                     stats["matched"] += 1
-                    inserted = registry.record_usage_event(
-                        cap["id"],
-                        cap["platform"],
-                        occurred_iso,
-                        source,
-                        confidence,
-                        session_id,
-                        f"{log_path.name}: {raw_path}",
-                    )
+                    if coverage: coverage["matched"] += 1
+                    inserted = registry.record_usage_event(cap["id"], cap["platform"], occurred_iso, source, confidence, session_id, f"{log_path.name}: {raw_path}")
                     if inserted:
                         stats["inserted"] += 1
+                        if coverage: coverage["inserted"] += 1
+            registry.conn.execute("insert into usage_log_context values (?,?) on conflict(path) do update set cwd=excluded.cwd",(str(log_path),cwd))
+            registry.conn.execute("insert into usage_log_cursors values (?,?,?,?) on conflict(path) do update set inode=excluded.inode,offset=excluded.offset,updated_at=excluded.updated_at", (str(log_path), identity, handle.tell(), now_iso()))
     registry.conn.commit()
     registry.refresh_usage_counts()
+    if progress: progress(len(log_files),len(log_files),"日志读取完成")
     registry.log_operation("usage-import", "", stats)
     return stats
 
@@ -1771,12 +1909,8 @@ def smart_upgrade_check(progress: Optional[Any] = None, use_cache: bool = True, 
     if progress:
         progress("scan", "", 0, 0)
     registry = Registry()
-    caps = discover_capabilities(load_config())
-    for cap in caps:
-        registry.upsert_capability(cap)
-    registry.prune_to_scan(caps)
-    registry.log_operation("smart-upgrade-scan", "", {"count": len(caps)}, commit=False)
-    registry.conn.commit()
+    scan_result = maintenance.Manager(sys.modules[__name__], registry).scan()
+    registry.log_operation("smart-upgrade-scan", "", {"count": scan_result["count"]})
     rows = [row_to_dict(row) for row in registry.all_capabilities("kind='skill'")]
     by_name: Dict[str, List[Dict[str, Any]]] = {}
     for row in rows:
@@ -2255,6 +2389,8 @@ def row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
         metadata = json.loads(data.get("metadata_json") or "{}")
     except Exception:
         metadata = {}
+    if data.get('source_type') == 'builtin':
+        data['source_type'] = normalize_source(metadata, Path(data['path']))
     data["management_scope"] = management_scope_for_row({**data, "metadata": metadata})
     return data
 
@@ -2498,14 +2634,8 @@ def github_json(uri: str) -> Any:
     if token:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(uri, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=20) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.URLError as exc:
-        if "CERTIFICATE_VERIFY_FAILED" not in str(exc):
-            raise
-        with urllib.request.urlopen(req, timeout=20, context=ssl._create_unverified_context()) as response:
-            return json.loads(response.read().decode("utf-8"))
+    with urllib.request.urlopen(req, timeout=20) as response:
+        return json.loads(response.read().decode("utf-8"))
 
 
 def gitlab_json(uri: str) -> Any:
@@ -2593,14 +2723,8 @@ def download_github_archive(info: Dict[str, str], branch: str, tmpdir: Path) -> 
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, headers=headers)
     archive = tmpdir / "repo.zip"
-    try:
-        with urllib.request.urlopen(req, timeout=60) as response:
-            archive.write_bytes(response.read())
-    except urllib.error.URLError as exc:
-        if "CERTIFICATE_VERIFY_FAILED" not in str(exc):
-            raise
-        with urllib.request.urlopen(req, timeout=60, context=ssl._create_unverified_context()) as response:
-            archive.write_bytes(response.read())
+    with urllib.request.urlopen(req, timeout=60) as response:
+        archive.write_bytes(response.read())
     extract_dir = tmpdir / "repo"
     extract_dir.mkdir()
     with zipfile.ZipFile(archive) as zf:
@@ -2612,10 +2736,17 @@ def download_github_archive(info: Dict[str, str], branch: str, tmpdir: Path) -> 
 def safe_extract_zip(zf: zipfile.ZipFile, target_dir: Path) -> None:
     root = target_dir.resolve()
     for member in zf.infolist():
+        if ((member.external_attr >> 16) & 0o170000) == 0o120000:
+            raise ValueError(f"Archive symlink requires manual review: {member.filename}")
         destination = (target_dir / member.filename).resolve()
         if destination != root and root not in destination.parents:
             raise ValueError(f"Unsafe archive path: {member.filename}")
     zf.extractall(target_dir)
+    # Git archive executable bits are part of the skill; never propagate setuid/setgid.
+    for member in zf.infolist():
+        mode = (member.external_attr >> 16) & 0o777
+        if mode and member.create_system == 3:
+            os.chmod(target_dir / member.filename, mode)
 
 
 def download_zip_archive(url: str, tmpdir: Path) -> Path:
@@ -2819,7 +2950,7 @@ def gitcode_mirror_candidates(info: Dict[str, str]) -> List[Dict[str, str]]:
         if not base_url:
             continue
         if channel.get("name") == "gitcode":
-            mirror_urls = [f"{base_url}/{prefix}/{repo_key}.git" for prefix in prefixes]
+            continue
         elif "{" in base_url:
             mirror_urls = [
                 base_url.format(
@@ -2976,6 +3107,19 @@ def install_source_from_url(url: str, tmpdir: Path) -> Tuple[Path, Dict[str, str
     clean = str(url or "").strip()
     if not clean:
         raise ValueError("URL is required")
+    from update_providers import source as service_source, download as service_download
+    registered = service_source(sys.modules[__name__], clean)
+    if registered:
+        if registered['provider'] == 'git':
+            channel = next(c for c in Registry().update_channels() if c['name'] == registered['channel'] and c['enabled'])
+            root = clone_git_repository(channel['base_url'], tmpdir)
+            registered['ref'] = current_git_branch(root)
+        else:
+            root, resolved = service_download(sys.modules[__name__], registered, tmpdir)
+            registered['ref'] = ''
+        return root, {"source_type":registered['provider'], "source_url":registered['url'],
+                      "source_ref":registered['ref'], "source_path":"", "channel":registered['channel'],
+                      "slug":registered.get('slug', '')}
     info = parse_github_url(clean) or parse_skills_sh_url(clean)
     if info:
         repo_api = f"https://api.github.com/repos/{info['owner']}/{info['repo']}"
@@ -3058,7 +3202,11 @@ def install_skill_from_url(url: str, target_root: str, remote_path: str, overwri
     if not str(target_root or "").strip():
         raise ValueError("Install directory is required")
     target_root_path = expand_root(target_root)
+    if is_builtin_path(target_root_path / "__asm_install__") or target_root_path.is_symlink():
+        raise ValueError("Select an editable actual source root, not a plugin cache or shared root alias.")
     target_root_path.mkdir(parents=True, exist_ok=True)
+    if overwrite:
+        raise ValueError("Overwrite installation is disabled; use a reviewed update/sync plan.")
     with tempfile.TemporaryDirectory(prefix="asm-install-") as tmp:
         repo_root, source = install_source_from_url(url, Path(tmp))
         candidates = skill_install_candidates(repo_root, source.get("source_path", ""), source.get("source_skill", ""))
@@ -3082,10 +3230,8 @@ def install_skill_from_url(url: str, target_root: str, remote_path: str, overwri
             shutil.rmtree(target_dir)
         shutil.copytree(source_dir, target_dir)
     registry = Registry()
-    caps = discover_capabilities(load_config())
-    for cap in caps:
-        registry.upsert_capability(cap)
-    registry.prune_to_scan(caps)
+    scan_result = maintenance.Manager(sys.modules[__name__], registry).scan()
+    caps = [dict(row) for row in registry.all_capabilities()]
     installed_cap = next((cap for cap in caps if cap.get("path") == str(target_dir)), {})
     registry.upsert_skill_update_source(
         {
@@ -3109,21 +3255,11 @@ def install_skill_from_url(url: str, target_root: str, remote_path: str, overwri
     registry.log_operation("install", str(target_dir), {"url": url, "source": source, "skill": candidate, "backup": backup}, commit=False)
     registry.conn.commit()
     usage_import = import_usage_from_logs(registry)
-    return {"installed": str(target_dir), "skill": candidate, "source": source, "backup": backup, "count": len(caps), "usage_import": usage_import}
+    return {"installed": str(target_dir), "skill": candidate, "source": source, "backup": backup, "count": scan_result["count"], "usage_import": usage_import}
 
 
 def copy_tree_contents(source: Path, target: Path) -> None:
-    if not source.is_dir():
-        raise ValueError(f"Remote source is not a directory: {source}")
-    if target.exists():
-        shutil.rmtree(target)
-    target.mkdir(parents=True, exist_ok=True)
-    for child in source.iterdir():
-        dest = target / child.name
-        if child.is_dir():
-            shutil.copytree(child, dest)
-        else:
-            shutil.copy2(child, dest)
+    raise ValueError("Direct tree replacement is disabled. Use maintenance preview and apply.")
 
 
 def unique_backup_path(prefix: str, row_id: str) -> Path:
@@ -3165,7 +3301,7 @@ def rows_for_ids(registry: Registry, ids: Sequence[str]) -> List[sqlite3.Row]:
 
 def is_editable_skill_dir(row: sqlite3.Row) -> bool:
     path = Path(row["path"])
-    return row["source_type"] != "builtin" and path.is_dir() and (path / "SKILL.md").exists()
+    return not is_builtin_path(path) and path.is_dir() and (path / "SKILL.md").exists()
 
 
 def normalized_skill_name(name: str) -> str:
@@ -3207,7 +3343,11 @@ def channel_enabled(name: str) -> bool:
 def record_channel_event(channel: str, action: str, outcome: str, skill_name: str = "", message: str = "", started_at: Optional[float] = None) -> None:
     duration_ms = int((time.time() - started_at) * 1000) if started_at else 0
     try:
-        Registry().record_update_channel_event(channel, action, outcome, skill_name, message, duration_ms)
+        registry = Registry()
+        try:
+            registry.record_update_channel_event(channel, action, outcome, skill_name, message, duration_ms)
+        finally:
+            registry.conn.close()
     except Exception:
         pass
 
@@ -3954,95 +4094,7 @@ def check_group_update(ids: Sequence[str], force_remote: bool = False, remember_
 
 
 def apply_group_update(ids: Sequence[str], mode: str) -> Dict[str, Any]:
-    registry = Registry()
-    selected_rows = rows_for_ids(registry, ids)
-    if not selected_rows:
-        raise ValueError("No capabilities selected.")
-    skipped = [row_to_dict(row) for row in selected_rows if not is_editable_skill_dir(row)]
-    rows = [row for row in selected_rows if is_editable_skill_dir(row)]
-    if not rows:
-        if all(row["source_type"] == "builtin" for row in selected_rows):
-            platform = selected_rows[0]["platform"] if selected_rows else ""
-            raise ValueError(f"Builtin skill. Update via {platform}.")
-        raise ValueError("No editable skill directory was selected. Only directories with SKILL.md can be updated.")
-    inactive_rows = [row for row in rows if row["status"] != "active"]
-    if inactive_rows:
-        names = ", ".join(sorted({row["name"] for row in inactive_rows}))
-        raise ValueError(f"Enable before updating: {names}")
-    roots = configured_roots()
-    for row in rows:
-        if not is_inside_any_root(Path(row["path"]), roots):
-            raise ValueError(f"Refusing to update path outside configured roots: {row['path']}")
-
-    backups: List[str] = []
-    updated = 0
-    if mode == "unify":
-        source = sorted(rows, key=lambda row: version_key(row["version"] or ""), reverse=True)[0]
-        source_path = Path(source["path"])
-        for row in rows:
-            if row["id"] == source["id"]:
-                continue
-            backups.append(str(backup_for_update(row, "unify")))
-            copy_tree_contents(source_path, Path(row["path"]))
-            updated += 1
-    elif mode == "remote":
-        base = next((row for row in rows if remote_info_for_cap(row)), None) or rows[0]
-        snapshot = get_remote_snapshot(registry, base["name"], fresh_only=False)
-        info = remote_info_from_snapshot(snapshot) if snapshot else None
-        source_mapping = None
-        if not info:
-            sources = registry.skill_update_sources(base["name"], base["platform"], base["path"])
-            source_mapping = sources[0] if sources else None
-            info = remote_info_from_update_source(source_mapping) if source_mapping else None
-        if not info:
-            info = remote_info_for_cap(base)
-        if not info:
-            raise ValueError("No supported repository metadata was found.")
-        if info.get("provider") == "gitlab":
-            project = urllib.parse.quote(info["project"], safe="")
-            branch = (snapshot or {}).get("source_ref") or base["github_ref"] or info["ref"] or gitlab_json(f"https://gitlab.com/api/v4/projects/{project}")["default_branch"]
-        elif info.get("provider") == "gitee":
-            branch = (snapshot or {}).get("source_ref") or base["github_ref"] or info["ref"] or ""
-        elif info.get("provider") == "gitcode":
-            branch = (snapshot or {}).get("source_ref") or base["github_ref"] or info["ref"] or ""
-        else:
-            repo_api = f"https://api.github.com/repos/{info['owner']}/{info['repo']}"
-            branch = (snapshot or {}).get("source_ref") or base["github_ref"] or info["ref"] or ""
-            if not branch:
-                try:
-                    branch = github_json(repo_api)["default_branch"]
-                except (urllib.error.HTTPError, urllib.error.URLError, ValueError):
-                    branch = ""
-        with tempfile.TemporaryDirectory(prefix="asm-update-") as tmp:
-            repo_root = download_remote_archive(info, branch, Path(tmp))
-            branch = info.get("resolved_ref") or branch
-            snapshot_path = (snapshot or {}).get("source_path") or (source_mapping or {}).get("source_path") or ""
-            remote_dir = repo_root / snapshot_path if snapshot_path else find_remote_skill_dir(repo_root, base["name"], Path(base["path"]).name, info.get("skill", ""))
-            if not remote_dir:
-                raise ValueError("Repository found, but no matching remote skill directory was found.")
-            for row in rows:
-                backups.append(str(backup_for_update(row, "update")))
-                copy_tree_contents(remote_dir, Path(row["path"]))
-                updated += 1
-    else:
-        raise ValueError(f"Unsupported update mode: {mode}")
-
-    refresh_result = refresh_registry(registry)
-    registry.log_operation("update", ",".join([row["id"] for row in rows[:8]]), {"mode": mode, "updated": updated, "backups": backups, "skipped": len(skipped)}, commit=False)
-    update_channel = "local" if mode == "unify" else str((info or {}).get("provider") or "remote") if mode == "remote" else "local"
-    if update_channel == "github" and (info or {}).get("mirror_provider"):
-        update_channel = str((info or {}).get("mirror_channel_name") or "gitcode")
-    registry.record_update_channel_event(update_channel, "update", "success", rows[0]["name"], f"{updated} copies updated", 0)
-    for row in rows:
-        registry.record_update_check(
-            row["id"],
-            "updated",
-            row["github_hash"] or "",
-            "",
-            remote_cache_payload("updated", f"Updated by {mode}.", origin="update-apply"),
-        )
-    registry.conn.commit()
-    return {"updated": updated, "mode": mode, "backups": backups, "skipped_targets": skipped, "refresh": refresh_result}
+    raise ValueError("Use maintenance update/sync preview followed by apply; legacy group overwrite is disabled.")
 
 
 def check_updates_command(args: argparse.Namespace) -> None:
@@ -4266,14 +4318,7 @@ def configured_roots_with_disabled() -> List[Path]:
 
 
 def refresh_registry(registry: Optional[Registry] = None) -> Dict[str, Any]:
-    registry = registry or Registry()
-    caps = discover_capabilities(load_config())
-    for cap in caps:
-        registry.upsert_capability(cap)
-    registry.prune_to_scan(caps)
-    registry.conn.commit()
-    usage_import = import_usage_from_logs(registry)
-    return {"count": len(caps), "usage_import": usage_import}
+    return maintenance.Manager(sys.modules[__name__], registry).scan()
 
 
 def is_inside_any_root(path: Path, roots: Sequence[Path]) -> bool:
@@ -4308,7 +4353,7 @@ def matched_config_root(path: Path) -> Optional[Tuple[Path, Path, str]]:
 def status_destination_for(cap: sqlite3.Row, status: str) -> Tuple[Path, Path]:
     if status not in ("active", "inactive"):
         raise ValueError(f"Unsupported status: {status}")
-    if cap["source_type"] == "builtin" or is_builtin_path(cap["path"]):
+    if is_builtin_path(cap["path"]):
         raise ValueError("Builtin/plugin cache capabilities are observe-only and cannot be enabled or disabled here.")
     source = Path(cap["path"])
     if not source.exists():
@@ -4329,26 +4374,8 @@ def status_destination_for(cap: sqlite3.Row, status: str) -> Tuple[Path, Path]:
 
 
 def set_real_status(registry: Registry, name_or_id: str, status: str, platform: str = "") -> Dict[str, Any]:
-    cap = registry.find_one(name_or_id, platform)
-    if not cap:
-        raise ValueError(f"No capability found for {name_or_id}")
-    source, destination = status_destination_for(cap, status)
-    if source == destination:
-        row = row_to_dict(cap)
-        return {"changed": False, "capability": row, "path": str(source), "message": "Already in requested state."}
-    if destination.exists():
-        raise ValueError(f"Target already exists: {destination}")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(source), str(destination))
-    registry.log_operation("status", cap["id"], {"status": status, "name": cap["name"], "platform": cap["platform"], "from": str(source), "to": str(destination)}, commit=False)
-    refresh_registry(registry)
-    rows = [row for row in registry.all_capabilities("path=?", (str(destination),))]
-    if not rows:
-        raise ValueError(f"Moved files, but rescan did not find the capability at {destination}")
-    row = row_to_dict(rows[0])
-    if row.get("status") != status:
-        raise ValueError(f"Moved files, but status verification failed for {destination}")
-    return {"changed": True, "capability": row, "from": str(source), "to": str(destination), "status": status}
+    m = maintenance.Manager(sys.modules[__name__], registry)
+    return {"preview_required": True, "plan": m.plan("activate" if status == "active" else "deactivate", m.select(name_or_id, platform))}
 
 
 def backup_capability_path(cap: sqlite3.Row) -> Path:
@@ -4367,38 +4394,8 @@ def backup_capability_path(cap: sqlite3.Row) -> Path:
 
 
 def delete_capability(registry: Registry, name_or_id: str, platform: str = "", confirmed: bool = False) -> Dict[str, Any]:
-    if not confirmed:
-        raise ValueError("Delete requires confirmed=true.")
-    cap = registry.find_one(name_or_id, platform)
-    if not cap:
-        raise ValueError(f"No capability found for {name_or_id}")
-    if cap["source_type"] == "builtin":
-        raise ValueError("Refusing to delete builtin/plugin cache capability.")
-    target = Path(cap["path"])
-    if not target.exists():
-        registry.delete_capability_row(cap["id"])
-        registry.log_operation("delete-missing", cap["id"], {"name": cap["name"], "platform": cap["platform"], "path": str(target)})
-        return {"deleted": False, "removed_from_registry": True, "backup": "", "message": "Path was already missing."}
-    if not is_inside_any_root(target, configured_roots_with_disabled()):
-        raise ValueError(f"Refusing to delete path outside configured roots: {target}")
-    backup_path = backup_capability_path(cap)
-    if target.is_dir():
-        shutil.rmtree(target)
-    else:
-        target.unlink()
-    refresh_registry(registry)
-    if target.exists():
-        raise ValueError(f"Delete verification failed, path still exists: {target}")
-    registry.delete_capability_row(cap["id"])
-    registry.log_operation("delete", cap["id"], {"name": cap["name"], "platform": cap["platform"], "path": str(target), "backup": str(backup_path)})
-    return {
-        "deleted": True,
-        "removed_from_registry": True,
-        "backup": str(backup_path),
-        "path": str(target),
-        "name": cap["name"],
-        "platform": cap["platform"],
-    }
+    m = maintenance.Manager(sys.modules[__name__], registry)
+    return {"preview_required": True, "plan": m.plan("delete", m.select(name_or_id, platform))}
 
 
 def delete_command(args: argparse.Namespace) -> None:
@@ -4455,14 +4452,14 @@ def create_snapshot_report() -> Dict[str, Any]:
         f"- Active: {active}",
         f"- Non-active: {inactive}",
         f"- Remote update tracking gaps: {missing_meta}",
-        f"- Zero usage in 30d: {unused}",
+        f"- No recorded usage in 30d (coverage may be incomplete): {unused}",
         "",
         "## Top Usage 30d",
         "",
     ]
     top = sorted(rows, key=lambda r: int(r["usage_30d"] or 0), reverse=True)[:20]
     lines.extend(markdown_table(top, ["platform", "kind", "name", "status", "usage_30d", "version", "source_type"]))
-    lines.extend(["", "## Zero Usage 30d", ""])
+    lines.extend(["", "## No Recorded Usage 30d - Not Proof of Inactivity", ""])
     zero = [r for r in rows if int(r["usage_30d"] or 0) == 0][:100]
     lines.extend(markdown_table(zero, ["platform", "kind", "name", "status", "version", "source_type"]))
     lines.extend(["", "## Remote Update Tracking Gaps", ""])
@@ -4527,7 +4524,7 @@ def snapshot_html(
         ("Total", total),
         ("Active", active),
         ("Non-active", inactive),
-        ("30d unused", unused),
+        ("30d unobserved", unused),
         ("Metadata gaps", missing_meta),
     ]
     card_html = "".join(f"<div class='card'><strong>{esc(value)}</strong><span>{esc(label)}</span></div>" for label, value in cards)
@@ -4583,8 +4580,13 @@ def api_payload(handler: http.server.BaseHTTPRequestHandler) -> Dict[str, Any]:
     length = int(handler.headers.get("Content-Length", "0") or 0)
     if length <= 0:
         return {}
+    if length > 1_048_576:
+        raise ValueError('Request body too large')
     raw = handler.rfile.read(length).decode("utf-8")
-    return json.loads(raw or "{}")
+    payload = json.loads(raw or "{}")
+    if not isinstance(payload, dict):
+        raise ValueError('Request body must be an object')
+    return payload
 
 
 def json_response(handler: http.server.BaseHTTPRequestHandler, payload: Any, status: int = 200) -> None:
@@ -4605,9 +4607,56 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:
         return
 
+    def authorized(self, write=False) -> bool:
+        expected = f"{self.server.server_address[0]}:{self.server.server_address[1]}"
+        host = self.headers.get("Host", "")
+        valid_hosts = {expected, f"localhost:{self.server.server_address[1]}"}
+        origin = self.headers.get("Origin")
+        if host not in valid_hosts or (origin and origin != "http://" + host):
+            json_response(self, {"error": "foreign origin/host"}, 403)
+            return False
+        if write and not secrets.compare_digest(self.headers.get("X-ASM-Token", ""), self.server.api_token):
+            json_response(self, {"error": "missing local API token"}, 403)
+            return False
+        return True
+
     def do_GET(self) -> None:
-        if self.path == "/" or self.path.startswith("/index"):
-            data = ADMIN_HTML.encode("utf-8")
+        if not self.authorized():
+            return
+        if urllib.parse.urlparse(self.path).path == "/api/backup-file":
+            if not self.authorized(write=True):return
+            name=urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get('id',[''])[0]
+            if not re.fullmatch(r'export-[0-9a-f]{16}\.zip',name):
+                json_response(self,{"error":"Invalid download"},400);return
+            target=APP_DIR / 'exports' / name
+            if not target.is_file() or target.is_symlink():
+                json_response(self,{"error":"Download expired; export again"},404);return
+            self.send_response(200)
+            self.send_header("Content-Type","application/zip")
+            self.send_header("Content-Disposition",'attachment; filename="skills-backup.zip"')
+            self.send_header("Content-Length",str(target.stat().st_size))
+            self.end_headers()
+            with target.open('rb') as stream:shutil.copyfileobj(stream,self.wfile)
+            return
+        if self.path == "/api/service":
+            json_response(self, {"name": APP_NAME, "instance": self.server.instance_id, "pid": os.getpid()})
+            return
+        if urllib.parse.urlparse(self.path).path == "/manage":
+            target = Path(__file__).resolve().parent.parent / "assets" / "maintenance.html"
+            data = target.read_text(encoding="utf-8").replace("__ASM_TOKEN__", self.server.api_token).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers(); self.wfile.write(data)
+            return
+        if self.path == "/":
+            self.send_response(302)
+            self.send_header("Location", "/manage")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if self.path == "/legacy" or self.path.startswith("/index"):
+            data = ADMIN_HTML.replace("__ASM_TOKEN__", self.server.api_token).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
@@ -4677,35 +4726,104 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
         json_response(self, {"error": "not found"}, 404)
 
     def do_POST(self) -> None:
+        if not self.authorized(write=True):
+            return
         try:
             payload = api_payload(self)
+            if self.server.maintenance_jobs.busy() and self.path not in ("/api/maintenance", "/api/service-stop", "/api/sources", "/api/update-channels", "/api/source-update", "/api/agent-add", "/api/update-channel-update", "/api/update-channel-search", "/api/update-channel-test", "/api/pick-directory", "/api/pick-install-source"):
+                json_response(self, {"error":"A maintenance task is running; wait for its result", "code":"busy", "message":"另一个任务正在执行，请等待完成。"}, 409)
+                return
+            if self.path == "/api/service-stop":
+                if self.server.maintenance_jobs.busy():
+                    json_response(self, {"error":"A maintenance task is still running; wait before stopping the service"}, 409)
+                    return
+                json_response(self, {"instance": self.server.instance_id, "stopping": True})
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
+                return
+            if self.path == "/api/maintenance":
+                jobs = self.server.maintenance_jobs
+                if payload.get('action') == 'job-start':
+                    result = jobs.start(payload.get('request'))
+                elif payload.get('action') == 'job-status':
+                    result = jobs.snapshot(payload.get('id'))
+                else:
+                    if jobs.busy() and payload.get('action') not in maintenance.BROWSE_ACTIONS:
+                        json_response(self, {"error":"A maintenance task is running; wait for its result", "code":"busy", "message":"另一个任务正在执行，请等待完成。"}, 409)
+                        return
+                    result = maintenance.api_dispatch(sys.modules[__name__], payload)
+                json_response(self, result)
+                return
             if self.path == "/api/scan":
-                registry = Registry()
-                caps = discover_capabilities(load_config())
-                for cap in caps:
-                    registry.upsert_capability(cap)
-                registry.prune_to_scan(caps)
-                registry.log_operation("scan", "", {"count": len(caps)}, commit=False)
-                registry.conn.commit()
-                usage_import = import_usage_from_logs(registry)
-                json_response(self, {"ok": True, "count": len(caps), "usage_import": usage_import})
+                if not SCAN_LOCK.acquire(blocking=False):
+                    json_response(self, {"error": "scan-already-running"}, 409)
+                    return
+                started_at = time.monotonic()
+                try:
+                    registry = Registry()
+                    scan_result = maintenance.Manager(sys.modules[__name__], registry).scan(import_logs=True)
+                    caps = list(range(scan_result["count"]))
+                    usage_import = scan_result["usage_import"]
+                    json_response(
+                        self,
+                        {
+                            "ok": True,
+                            "count": len(caps),
+                            "usage_import": usage_import,
+                            "elapsed_seconds": round(time.monotonic() - started_at, 1),
+                        },
+                    )
+                finally:
+                    SCAN_LOCK.release()
                 return
             if self.path == "/api/sources":
-                json_response(self, {"ok": True, "sources": source_entries(), "config_path": str(CONFIG_PATH)})
+                from skill_locations import agent_catalog
+                json_response(self, {"ok": True, "sources": source_entries(), "agents": agent_catalog(load_config()), "config_path": str(CONFIG_PATH)})
                 return
             if self.path == "/api/source-update":
-                result = update_source(payload.get("action", ""), payload.get("platform", ""), payload.get("root", ""), payload.get("enabled"))
+                with self.server.maintenance_jobs.configure():
+                    result = update_source(payload.get("action", ""), payload.get("platform", ""), payload.get("root", ""), payload.get("enabled"), payload.get("label", ""))
                 json_response(self, {"ok": True, **result})
+                return
+            if self.path == "/api/agent-add":
+                from skill_locations import add_preset_agent
+                with self.server.maintenance_jobs.configure():
+                    result = add_preset_agent(sys.modules[__name__],payload.get('agent',''))
+                json_response(self, {"ok":True, **result})
                 return
             if self.path == "/api/update-channels":
                 json_response(self, {"ok": True, "channels": Registry().update_channels()})
                 return
             if self.path == "/api/update-channel-update":
-                result = Registry().update_channel(payload.get("action", ""), payload)
+                with self.server.maintenance_jobs.configure():
+                    result = Registry().update_channel(payload.get("action", ""), payload)
+                json_response(self, {"ok": True, **result})
+                return
+            if self.path == "/api/update-channel-test":
+                from update_providers import test_connection
+                with self.server.maintenance_jobs.network():
+                    result = test_connection(sys.modules[__name__], payload.get('name', ''))
+                json_response(self, {"ok": True, **result})
+                return
+            if self.path == "/api/update-channel-search":
+                from source_search import search
+                from maintenance import Manager
+                query = str(payload.get('query') or '').strip()[:200]
+                if not query:
+                    raise ValueError('请输入搜索关键词')
+                manager = Manager(sys.modules[__name__])
+                try:
+                    with self.server.maintenance_jobs.network():
+                        result = search(manager, query, payload.get('name'))
+                finally:
+                    manager.db.close()
                 json_response(self, {"ok": True, **result})
                 return
             if self.path == "/api/pick-directory":
                 result = pick_directory()
+                json_response(self, {"ok": True, **result})
+                return
+            if self.path == "/api/pick-install-source":
+                result = pick_install_source(payload.get("kind", ""))
                 json_response(self, {"ok": True, **result})
                 return
             if self.path == "/api/install-preview":
@@ -4781,7 +4899,10 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
                 return
             json_response(self, {"error": "not found"}, 404)
         except Exception as exc:
-            json_response(self, {"error": str(exc)}, 500)
+            from diagnostics import record
+            request_data = locals().get("payload")
+            event = record(APP_DIR, exc, request_data.get("action", "http-request") if isinstance(request_data, dict) else "http-request")
+            json_response(self, event, 409 if event["code"] == "busy" else 400 if isinstance(exc, (ValueError, KeyError)) else 500)
 
 
 ADMIN_HTML = r"""<!doctype html>
@@ -5649,6 +5770,7 @@ ADMIN_HTML = r"""<!doctype html>
   </style>
 </head>
 <body>
+  <p style="padding:12px;text-align:center;background:#eaf1e8"><a href="/manage">日常管理：扫描、更新、同步、备份、历史与恢复</a></p>
   <header>
     <div class="bar">
       <div>
@@ -5656,7 +5778,7 @@ ADMIN_HTML = r"""<!doctype html>
         <div class="sub" id="meta">loading registry</div>
       </div>
       <div class="actions">
-        <button class="primary" onclick="scan()" data-i18n="syncScan">Sync Scan</button>
+        <button class="primary" id="scanButton" onclick="scan()" data-i18n="syncScan">Sync Scan</button>
         <button onclick="showRecommendations()" data-i18n="recommendations">Smart Update</button>
         <button onclick="refreshPage()" data-i18n="refresh">Refresh</button>
         <details class="more-menu">
@@ -5765,6 +5887,7 @@ ADMIN_HTML = r"""<!doctype html>
     let currentSmartJob = null;
     let visibleGroups = [];
     let visibleLimit = 80;
+    let scanInFlight = false;
     const LIST_BATCH_SIZE = 80;
     const noUpdateGroups = new Set();
     const dict = {
@@ -5773,6 +5896,10 @@ ADMIN_HTML = r"""<!doctype html>
         capabilities: 'capabilities',
         scan: 'Scan',
         syncScan: 'Skills Scan',
+        scanning: 'Scanning…',
+        scanStarted: 'Scanning local skills and importing 30-day usage…',
+        scanAlreadyRunning: 'A scan is already running.',
+        scanDone: (count, usage, seconds) => `Scanned ${count} capabilities · imported ${usage} usage events · ${seconds}s`,
         moreActions: 'More',
         healthCheck: 'Health',
         healthResult: 'Health Check Results',
@@ -5962,7 +6089,7 @@ ADMIN_HTML = r"""<!doctype html>
         snapshotHtml: 'HTML report',
         openReport: 'Open HTML Report',
         snapshotIncludes: 'Includes',
-        snapshotSections: 'Overview, 30-day usage ranking, 30-day unused list, remote update tracking gaps',
+        snapshotSections: 'Overview, 30-day usage ranking, 30-day unobserved list, remote update tracking gaps',
         refresh: 'Refresh',
         langToggle: '中文',
         searchPlaceholder: 'Search name',
@@ -6018,7 +6145,7 @@ ADMIN_HTML = r"""<!doctype html>
         activeMetric: 'Active',
         githubMetric: 'Pending Updates',
         builtinMetric: 'Builtin',
-        unused30d: 'Unused 30d',
+        unused30d: 'No records 30d',
         healthFlags: 'Health Issues',
         activate: 'Activate',
         pause: 'Deactivate',
@@ -6064,6 +6191,10 @@ ADMIN_HTML = r"""<!doctype html>
         capabilities: '个能力',
         scan: '扫描',
         syncScan: 'Skills 扫描',
+        scanning: '正在扫描…',
+        scanStarted: '正在扫描本地 Skills，并导入近 30 天使用数据…',
+        scanAlreadyRunning: '已有扫描正在运行。',
+        scanDone: (count, usage, seconds) => `已扫描 ${count} 个能力 · 导入 ${usage} 条使用记录 · ${seconds} 秒`,
         moreActions: '更多',
         health: '健康检查',
         healthResult: '健康检查结果',
@@ -6251,7 +6382,7 @@ ADMIN_HTML = r"""<!doctype html>
         snapshotHtml: 'HTML 报告',
         openReport: '打开 HTML 报告',
         snapshotIncludes: '包含内容',
-        snapshotSections: '总览统计、30天使用排行、30天未使用列表、远程更新追踪缺失列表',
+        snapshotSections: '总览统计、30天使用排行、30天无使用记录列表、远程更新追踪缺失列表',
         refresh: '刷新',
         langToggle: 'English',
         searchPlaceholder: '搜索名称',
@@ -6292,7 +6423,7 @@ ADMIN_HTML = r"""<!doctype html>
         status: '状态',
         healthCheck: '健康检查',
         healthScore: '健康分',
-        healthHelp: '健康分 = 状态分（30）+ 质量分（30）+ 结构健康（40）\n\n内置/官方能力只观察：30天未使用、缺少远程元数据、没有云端来源不会扣分。\n\n状态分：\n启用 30，停用 18，故障 0\n\n质量分：\n普通 skill 按 30天使用 + 版本 + 描述 + 来源追踪计算；内置能力只看版本、描述和来源识别。\n\n结构健康：\nok 40，warning 25，unknown 20，metadata-error 10，missing/broken 0',
+        healthHelp: '健康分 = 状态分（30）+ 质量分（30）+ 结构健康（40）\n\n内置/官方能力只观察：30天无使用记录、缺少远程元数据、没有云端来源不会扣分。\n\n状态分：\n启用 30，停用 18，故障 0\n\n质量分：\n普通 skill 按 30天使用 + 版本 + 描述 + 来源追踪计算；内置能力只看版本、描述和来源识别。\n\n结构健康：\nok 40，warning 25，unknown 20，metadata-error 10，missing/broken 0',
         version: '版本',
         thirtyDays: '30天使用',
         source: '来源',
@@ -6309,7 +6440,7 @@ ADMIN_HTML = r"""<!doctype html>
         activeMetric: '已启用',
         githubMetric: '待更新',
         builtinMetric: '内置',
-        unused30d: '30天未用',
+        unused30d: '30天无记录',
         healthFlags: '健康异常',
         activate: '启用',
         pause: '停用',
@@ -6389,7 +6520,7 @@ ADMIN_HTML = r"""<!doctype html>
       loadingTimer = setInterval(renderDots, 420);
     }
     async function api(path, body) {
-      const res = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
+      const res = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json', 'X-ASM-Token': '__ASM_TOKEN__'}, body: JSON.stringify(body || {})});
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error || res.statusText);
       return data;
@@ -6410,7 +6541,14 @@ ADMIN_HTML = r"""<!doctype html>
       $('healthHelp').setAttribute('data-tip', t('healthHelp'));
       document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
       document.querySelectorAll('[data-i18n-placeholder]').forEach(el => { el.placeholder = t(el.dataset.i18nPlaceholder); });
+      updateScanButton();
       updateDetailCloseButton();
+    }
+    function updateScanButton() {
+      const button = $('scanButton');
+      button.disabled = scanInFlight;
+      button.textContent = t(scanInFlight ? 'scanning' : 'syncScan');
+      button.setAttribute('aria-busy', scanInFlight ? 'true' : 'false');
     }
     function label(value) {
       return t(value) || value;
@@ -7633,7 +7771,22 @@ ADMIN_HTML = r"""<!doctype html>
         toast(e.message);
       }
     }
-    async function scan() { try { const d = await api('/api/scan'); toast(t('scanned')(d.count)); await load(); } catch(e) { toast(e.message); } }
+    async function scan() {
+      if (scanInFlight) return;
+      scanInFlight = true;
+      updateScanButton();
+      toast(t('scanStarted'));
+      try {
+        const d = await api('/api/scan');
+        await load();
+        toast(t('scanDone')(d.count, Number(d.usage_import?.inserted || 0), Number(d.elapsed_seconds || 0).toFixed(1)));
+      } catch(e) {
+        toast(e.message === 'scan-already-running' ? t('scanAlreadyRunning') : e.message);
+      } finally {
+        scanInFlight = false;
+        updateScanButton();
+      }
+    }
     function refreshPage() { window.location.reload(); }
     function health() {
       closeMoreMenus();
@@ -7772,7 +7925,7 @@ ADMIN_HTML = r"""<!doctype html>
           <span class="health-severity health-severity-${esc(severity)}">${esc(healthSeverityLabel(severity))}</span>
         </div>`;
     }
-    async function setStatus(id, status) { try { await api('/api/status', {name: id, status}); toast(`${id} -> ${status}`); await load(); } catch(e) { toast(e.message); } }
+    async function setStatus(id, status) { window.location.href = '/manage?target=' + encodeURIComponent(id); }
     function actionLabel(action) {
       if (action === 'active') return t('activate');
       if (action === 'inactive') return t('pause');
@@ -7864,6 +8017,7 @@ ADMIN_HTML = r"""<!doctype html>
       updateDetailCloseButton();
     }
     async function openUpdate(groupKey, forceRemote = false) {
+      const selected = groupByKey(groupKey); window.location.href = '/manage?target=' + encodeURIComponent(selected?.items[0]?.id || ''); return;
       const group = groupByKey(groupKey);
       if (!group) return toast(groupKey);
       const ids = group.items.map(c => c.id);
@@ -7904,6 +8058,7 @@ ADMIN_HTML = r"""<!doctype html>
       }
     }
     async function applyUpdate(ids, mode) {
+      window.location.href = '/manage?target=' + encodeURIComponent(ids[0]); return;
       try {
         showLoadingMessage('updating');
         const result = await api('/api/update-apply', {ids, mode});
@@ -7947,6 +8102,7 @@ ADMIN_HTML = r"""<!doctype html>
       }
     }
     async function runAction(ids, action) {
+      window.location.href = '/manage?target=' + encodeURIComponent(ids[0]); return;
       const targets = ids.map(id => state.capabilities.find(c => c.id === id)).filter(Boolean);
       if (!targets.length) return;
       if (action === 'delete' || action === 'inactive' || action === 'active') {
@@ -8015,18 +8171,7 @@ ADMIN_HTML = r"""<!doctype html>
         toast(e.message);
       }
     }
-    async function deleteCap(id) {
-      const cap = state.capabilities.find(c => c.id === id);
-      if (!cap) return toast(id);
-      if (!confirm(t('deleteConfirm')({...cap, platform: label(cap.platform)}))) return;
-      try {
-        const d = await api('/api/delete', {name: id, confirmed: true});
-        toast(t('deleted')(d.backup || ''));
-        await load();
-      } catch(e) {
-        toast(e.message);
-      }
-    }
+    async function deleteCap(id) { window.location.href = '/manage?target=' + encodeURIComponent(id); }
     window.addEventListener('scroll', maybeLoadMoreRows, {passive: true});
     load().then(() => maybeLoadMoreRows());
   </script>
@@ -8037,17 +8182,34 @@ ADMIN_HTML = r"""<!doctype html>
 
 def web_command(args: argparse.Namespace) -> None:
     host = args.host or load_config().get("web", {}).get("host", "127.0.0.1")
-    port = int(args.port or load_config().get("web", {}).get("port", 8765))
+    port = int(args.port if args.port is not None else load_config().get("web", {}).get("port", 8765))
+    if host not in ("127.0.0.1", "localhost"):
+        raise ValueError("The management server supports loopback only")
+    host = "127.0.0.1"
     Registry()
     server = http.server.ThreadingHTTPServer((host, port), AdminHandler)
-    url = f"http://{host}:{port}/"
+    import web_jobs
+    server.maintenance_jobs = web_jobs.Jobs(sys.modules[__name__])
+    server.api_token = secrets.token_urlsafe(32)
+    server.instance_id = secrets.token_hex(16)
+    url = f"http://{host}:{server.server_address[1]}/"
+    service_file = APP_DIR / "service.json"
+    maintenance.write_json(service_file, {"pid": os.getpid(), "url": url, "token": server.api_token, "instance": server.instance_id})
     print(f"Agent Skill Manager admin: {url}")
     if args.open:
-        threading.Timer(0.4, lambda: webbrowser.open(url)).start()
+        threading.Timer(0.4, lambda: webbrowser.open(url + "manage")).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nStopped.")
+    finally:
+        server.server_close()
+        try:
+            current = json.loads(service_file.read_text())
+            if current.get("instance") == server.instance_id:
+                service_file.unlink()
+        except (OSError, ValueError):
+            pass
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -8109,6 +8271,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=int)
     p.add_argument("--open", action="store_true")
     p.set_defaults(func=web_command)
+    maintenance.register(sub, sys.modules[__name__])
     return parser
 
 

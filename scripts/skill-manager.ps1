@@ -23,7 +23,7 @@ function Find-Python {
     $cmd = Get-Command $candidate.Command -ErrorAction SilentlyContinue
     if (-not $cmd) { continue }
     try {
-      $version = & $candidate.Command @($candidate.Args + @("-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)")) 2>$null
+      $version = & $candidate.Command @($candidate.Args + @("-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)")) 2>$null
       if ($LASTEXITCODE -eq 0) {
         return $candidate
       }
@@ -31,7 +31,7 @@ function Find-Python {
       continue
     }
   }
-  throw "Python 3.9+ was not found. Install Python from https://www.python.org/downloads/windows/ and enable 'Add python.exe to PATH', then run this script again."
+  throw "Python 3.10+ was not found. Install Python from https://www.python.org/downloads/windows/ and enable 'Add python.exe to PATH', then run this script again."
 }
 
 function Add-OptionalPlatformArg {
