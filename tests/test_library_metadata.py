@@ -127,6 +127,41 @@ class LibraryMetadataTests(unittest.TestCase):
         self.assertEqual(diagnostics.classify(error)[0],'remote_rate_limit')
         self.assertEqual(diagnostics.classify(urllib.error.HTTPError('https://api.github.com/x',404,'missing',{},None))[0],'remote_not_found')
 
+    def test_bound_source_search_probes_repository_before_platforms(self):
+        import source_search
+        self.m.bind_source(self.row('a'),'https://github.com/owner/collection','main','old/a')
+        before=self.m.source(self.row('a'))
+        candidate={'source':{**before,'path':'optional-skills/a'},'evidence':'content-match'}
+        with patch.object(self.m,'probe_source',return_value={'candidates':[candidate],'truncated':False}),patch.object(source_search,'search') as search:
+            result=self.m.discover_sources(self.row('a')['id'],True)
+        search.assert_not_called()
+        self.assertEqual(result['items'][0]['candidates'],[candidate])
+        self.assertEqual(self.m.source(self.row('a')),before)
+
+    def test_bound_source_without_match_searches_platforms_without_rebinding(self):
+        import source_search
+        self.m.bind_source(self.row('a'),'https://github.com/owner/collection','main','old/a')
+        before=self.m.source(self.row('a'))
+        with patch.object(self.m,'probe_source',return_value={'candidates':[],'truncated':False}),patch.object(source_search,'search',return_value={'candidates':[],'trace':[{'channel':'skillhub','status':'success','candidates':0}]}) as search:
+            result=self.m.discover_sources(self.row('a')['id'],True)
+        search.assert_called_once()
+        self.assertEqual(result['items'][0]['trace'][-1]['channel'],'skillhub')
+        self.assertEqual(self.m.source(self.row('a')),before)
+
+    def test_software_repository_is_not_a_missing_skill_subdirectory(self):
+        from github_subset import selected_entries,SourcePathError
+        with self.assertRaises(SourcePathError) as raised:
+            selected_entries([{'path':'README.md','type':'blob'}],'','FFmpeg-editor')
+        self.assertEqual(raised.exception.source_issue['kind'],'repository_has_no_skills')
+        self.assertIn('依赖软件',diagnostics.classify(raised.exception)[1])
+
+    def test_tree_metadata_has_separate_bounded_response_limit(self):
+        with patch('network_io.read',return_value=b'{}') as read:
+            self.a.github_json('https://api.github.com/repos/o/r/git/trees/main?recursive=1')
+            self.assertEqual(read.call_args.kwargs['limit'],8_000_000)
+            self.a.github_json('https://api.github.com/repos/o/r/commits/main')
+            self.assertEqual(read.call_args.kwargs['limit'],4_000_000)
+
     def test_batch_rate_limit_stops_remaining_requests_preserves_unchecked(self):
         import time
         from web_jobs import Jobs

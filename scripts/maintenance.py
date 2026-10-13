@@ -19,7 +19,7 @@ import time
 import uuid
 from pathlib import Path
 
-BROWSE_ACTIONS = frozenset({'source-search-policy','taxonomy','inventory-cached','backups','history','plans','get-plan','install-roots','usage','update-summary','duplicate-cached','backup-detail','backup-advice','restore-targets','open-directory'})
+BROWSE_ACTIONS = frozenset({'discovery-cached','uninstall-references','cache-inspect','source-search-policy','taxonomy','inventory-cached','inventory-detail','backups','history','plans','get-plan','install-roots','usage','update-summary','duplicate-cached','backup-detail','backup-advice','restore-targets','open-directory'})
 
 SCHEMA = '''
 create table if not exists maintenance_plans(id text primary key, created_at text, state text, payload text);
@@ -52,6 +52,103 @@ def absolute(path):
 def exists(path):
     return os.path.lexists(path)
 
+
+@contextlib.contextmanager
+def source_batch(manager):
+    """Cache discovery only within a comparison batch; explicit bindings stay per ID."""
+    previous = getattr(manager, '_source_context', None)
+    missing = object()
+    previous_channels = getattr(manager.r, '_batch_update_channels', missing)
+    manager._source_context = {'sources': {}, 'installer': {}, 'git': {}}
+    manager.r._batch_update_channels = None
+    try:
+        yield manager._source_context
+    finally:
+        manager._source_context = previous
+        if previous_channels is missing: delattr(manager.r, '_batch_update_channels')
+        else: manager.r._batch_update_channels = previous_channels
+
+
+def inventory_summary(value):
+    """Keep list decisions intact, but fetch candidates and comparison details on demand."""
+    omitted = {'local_source_candidates', 'source_candidates', 'classification_meta',
+               'references', 'reference_paths', 'differences', 'storage_roots', 'usage_note'}
+    def project(node):
+        if isinstance(node, list): return [project(item) for item in node]
+        if not isinstance(node, dict): return node
+        result = {key:project(item) for key,item in node.items() if key not in omitted}
+        return result
+    result = project(value)
+    for item in result.get('items', []): item['_summary'] = True
+    return result
+
+
+def prune_agent_cache(registry, platform):
+    """Patch presentation only; registered consumers remain available to write checks."""
+    db = registry.conn
+    if not db.execute("select 1 from sqlite_master where name='maintenance_inventory_cache'").fetchone():
+        return
+    try:
+        db.execute('begin immediate')
+        row = db.execute('select * from maintenance_inventory_cache where id=1').fetchone()
+        if not row:
+            db.commit()
+            return
+        try:
+            payload = json.loads(row['payload'] or 'null')
+        except (ValueError, TypeError):
+            payload = None
+        valid = (isinstance(payload, dict) and isinstance(payload.get('cache'), dict)
+                 and payload['cache'].get('schema') == 10 and isinstance(payload.get('items'), list))
+        generation = row['generation'] + 1
+        if valid:
+            affected = {i['real_path'] for i in payload['items'] if i['platform'] == platform}
+            items = payload['items'] = [i for i in payload['items'] if i['platform'] != platform]
+            groups = {}
+            for item in items:
+                groups.setdefault(item['real_path'], []).append(item)
+            for group in groups.values():
+                agents = sorted({a for i in group for a in i.get('known_agents', []) if a != platform})
+                paths = sorted({i['path'] for i in group})
+                for item in group:
+                    item.update(known_agents=agents, shared=len(agents) > 1,
+                                references=[i['id'] for i in group], reference_paths=paths,
+                                multiple_references=len(paths) > 1)
+            payload['locations'] = [l for l in payload.get('locations', []) if l['platform'] != platform]
+            removed_ids = {r['id'] for r in db.execute('select id from capabilities where platform=?', (platform,))}
+            payload['excluded_registered_paths'] = [i for i in payload.get('excluded_registered_paths', []) if i['id'] not in removed_ids]
+            from insights import summarize
+            payload['insights'] = summarize(items)
+            payload['shared_targets'] = [[i['id'] for i in group] for group in groups.values() if group[0]['shared']]
+            payload['same_source_copies'] = [[t['id'] for t in group['targets']] for group in payload['insights']['independent_copies']]
+            payload['cleanup_candidates'] = payload['insights']['space_review']
+            unique = {i['real_path']:i.get('target_space', i.get('space', {})) for i in items if i['present'] and i['health'] != 'broken-link'}
+            payload['space']['installed_unique'] = {key:sum(s.get(key, 0) for s in unique.values()) for key in ('bytes', 'allocated_bytes')}
+            pending = set(payload['cache'].get('recheck_ids', []))
+            payload['cache'].update(generation=generation,
+                                    recheck_ids=[i['id'] for i in items if i['real_path'] in affected or i['id'] in pending])
+        # Preserve unrelated invalidation and the original freshness timestamps.
+        payload_generation = generation if row['generation'] == row['payload_generation'] else row['payload_generation']
+        db.execute('update maintenance_inventory_cache set payload=?,generation=?,payload_generation=? where id=1',
+                   (json.dumps(payload, ensure_ascii=False) if valid else None, generation, payload_generation))
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+
+def job_summary(value):
+    """Project comparison/list jobs only; never strip recovery or write-operation evidence."""
+    result = dict(value)
+    if 'jobs' in result:
+        result['jobs'] = [job_summary(job) for job in result['jobs']]
+        result['active'] = job_summary(result['active']) if result.get('active') else None
+    if result.get('action') in ('inventory', 'check', 'check-many'):
+        if result.get('result'): result['result'] = inventory_summary(result['result'])
+        if result.get('partial_checks'):
+            result['partial_checks'] = inventory_summary({'checks':result['partial_checks']})['checks']
+    return result
+
 def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(path.name + '.tmp-' + uuid.uuid4().hex)
@@ -66,13 +163,15 @@ def digest_file(path):
             h.update(block)
     return h.hexdigest()
 
-def manifest(path):
+def manifest(path, ignore_git=False):
     """No following links. Includes empty dirs and permissions, rejects devices."""
     path = Path(path)
     if not exists(path):
         return {}
     result = {}
     def visit(p, rel):
+        if ignore_git and (rel == '.git' or rel.startswith('.git/')):
+            return
         s = p.lstat()
         mode = stat.S_IMODE(s.st_mode)
         if stat.S_ISLNK(s.st_mode):
@@ -90,6 +189,9 @@ def manifest(path):
 
 def fingerprint(m):
     return hashlib.sha256(json.dumps(m, sort_keys=True).encode()).hexdigest()
+
+def comparison_fingerprint(files):
+    return fingerprint({k:v for k,v in files.items() if k != '.git' and not k.startswith('.git/')})
 
 def copy_path(source, destination):
     if source.is_symlink():
@@ -114,7 +216,7 @@ def diff(before, after):
     return {'added': sorted(a.keys() - b.keys()), 'removed': sorted(b.keys() - a.keys()),
             'changed': sorted(k for k in b.keys() & a.keys() if b[k] != a[k])}
 
-def size(path, seen=None):
+def size(path, seen=None, inode_sizes=None):
     seen = seen if seen is not None else set()
     total = allocated = 0
     if not exists(path):
@@ -126,7 +228,11 @@ def size(path, seen=None):
         if key in seen:
             return
         seen.add(key)
-        allocated += getattr(s, 'st_blocks', (s.st_size + 511) // 512) * 512
+        blocks = getattr(s, 'st_blocks', (s.st_size + 511) // 512) * 512
+        allocated += blocks
+        if inode_sizes is not None:
+            inode_sizes[key] = {'bytes':0 if stat.S_ISDIR(s.st_mode) else s.st_size,
+                                'allocated_bytes':blocks}
         if not stat.S_ISDIR(s.st_mode):
             total += s.st_size
         else:
@@ -143,11 +249,12 @@ class Manager:
         self.db.executescript(SCHEMA)
         from taxonomy import initialize
         initialize(self)
-        import classification, source_search
+        import classification, source_search, skill_discovery
         classification.initialize(self)
         source_search.initialize(self)
+        skill_discovery.initialize(self)
         self.db.execute('insert or ignore into maintenance_inventory_cache(id) values (1)')
-        self.home = legacy.APP_DIR
+        self.home = legacy.APP_DIR.resolve()
         for name in ('plans', 'backups', 'quarantine'):
             p = self.home / name
             p.mkdir(parents=True, exist_ok=True)
@@ -168,9 +275,32 @@ class Manager:
             return {'items':[], 'cache':{'available':False, 'from_cache':True,'dirty':True}}
         payload['cache'].update(from_cache=True, dirty=row['generation'] != row['payload_generation'])
         from version_policy import normalize_check
+        from check_results import observed_at, source_key
+        saved = {r['id']:dict(r) for r in self.db.execute('select id,source,last_check from maintenance_items')} if payload['cache']['dirty'] else {}
+        source_changed=False
         for item in payload['items']:
+            state = saved.get(item['id'])
+            if state:
+                recorded = json.loads(state['last_check'] or 'null')
+                binding = json.loads(state['source'] or 'null')
+                current = item.get('source')
+                if binding and source_key(binding) != source_key(current):
+                    item['update_check'] = None
+                    item['source'] = binding
+                    source_changed=True
+                elif not recorded:
+                    item['update_check'] = None
+                elif (not (recorded.get('comparison_source') or recorded.get('source'))
+                      or source_key(recorded.get('comparison_source') or recorded.get('source')) == source_key(current)):
+                    if observed_at(recorded) >= observed_at(item.get('update_check') or {}):
+                        item['update_check'] = recorded
             item['update_check'] = normalize_check(item.get('update_check'),item.get('version'))
             item.setdefault('synced_at', payload['cache'].get('generated_at'))
+        if source_changed:
+            from insights import summarize
+            payload.update(summarize(payload['items']))
+        from check_results import reconcile
+        reconcile(payload['items'])
         return payload
 
     @contextlib.contextmanager
@@ -209,6 +339,9 @@ class Manager:
         return item
 
     def state(self, item):
+        saved = self.db.execute('select * from maintenance_items where id=?', (item['id'],)).fetchone()
+        if saved:
+            return dict(saved)
         self.db.execute('insert or ignore into maintenance_items(id) values (?)', (item['id'],))
         self.db.commit()
         return dict(self.db.execute('select * from maintenance_items where id=?', (item['id'],)).fetchone())
@@ -235,6 +368,7 @@ class Manager:
             cap.update(status=status)
             if previous: cap['id'] = previous['id']
             self.r.upsert_capability(cap)
+            self.db.execute('insert or ignore into maintenance_items(id) values (?)', (cap['id'],))
             fs = ref.lstat()
             self.db.execute('insert into maintenance_fs_identity values (?,?,?,?) on conflict(platform,device,inode) do update set item_id=excluded.item_id',
                             (platform, fs.st_dev, fs.st_ino, cap['id']))
@@ -262,7 +396,7 @@ class Manager:
         if not matching:
             raise ValueError('Target must be below an enabled configured root: ' + str(path))
         root = max(matching, key=lambda p: len(p.parts))
-        if root.is_symlink():
+        if root.is_symlink() or any(parent.is_symlink() for parent in root.parents):
             raise ValueError('This Agent root is a shared symlink. Select the actual shared source directory to change content for all affected Agents; per-Agent removal is unavailable here.')
         # An intermediate link is never an implicit write target.
         for parent in path.parents:
@@ -396,6 +530,7 @@ class Manager:
         lightweight = bool(lightweight and snapshot.get('cache', {}).get('available'))
         saved_items = {i['id']:i for i in snapshot.get('items', [])}
         basic_metadata, basic_text, fingerprints, ownership_cache, candidate_cache = {}, {}, {}, {}, {}
+        installer_cache = {}
         # Scoped reads must not trigger global usage-count writes.
         if ids is None and not lightweight:
             raw_rows = self.r.all_capabilities()
@@ -404,7 +539,7 @@ class Manager:
         else:
             if not isinstance(ids,list) or len(ids)>10000 or any(not isinstance(i,str) for i in ids):
                 raise ValueError('Invalid inventory scope')
-            cached = self.cached_inventory()
+            cached = snapshot
             rows = self.db.execute('select * from capabilities where id in (select value from json_each(?))', (json.dumps(ids),)).fetchall()
             targets = {str(Path(r['path']).resolve()) for r in rows}
             related = set(ids) | {i['id'] for i in cached.get('items', []) if i.get('real_path') in targets}
@@ -416,7 +551,7 @@ class Manager:
                 raise ValueError('Invalid inventory scope')
             requested=set(ids)
             # Include aliases of the same files, never unrelated Skill contents.
-            cached = {i['id']:i for i in self.cached_inventory().get('items', [])}
+            cached = saved_items
             targets={str(Path(r['path']).resolve()) for r in raw_rows if r['id'] in requested}
             raw_rows=[r for r in raw_rows if r['id'] in requested or
                       (cached[r['id']]['real_path'] if r['id'] in cached else str(Path(r['path']).resolve())) in targets]
@@ -428,11 +563,14 @@ class Manager:
             item_id = json.loads(history['payload']).get('item',{}).get('id')
             if item_id:
                 self.db.execute('update maintenance_item_dates set installed_at=? where id=? and installed_at is null', (history['updated_at'],item_id))
+        # Directory reads and hashing must never hold the SQLite writer lock.
+        self.db.commit()
         selected_ids = json.dumps([r['id'] for r in raw_rows])
         dates = {r['id']:dict(r) for r in self.db.execute('select * from maintenance_item_dates where id in (select value from json_each(?))', (selected_ids,))}
         frequencies = self.library_frequencies(raw_rows)
         latest_reads = self.library_last_reads(raw_rows)
         states = {r['id']:dict(r) for r in self.db.execute('select * from maintenance_items where id in (select value from json_each(?))', (selected_ids,))}
+        classification_states = {r['real_path']:json.loads(r['payload']) for r in self.db.execute('select real_path,payload from classification_state')}
         try: searched_candidates = json.loads((self.home/'source-candidates.json').read_text())
         except (OSError,ValueError): searched_candidates = {}
         labels = {r['real_path']:{'category':r['category'], 'tags':json.loads(r['tags'])} for r in self.db.execute('select * from maintenance_labels')}
@@ -448,7 +586,7 @@ class Manager:
         for raw in self.db.execute("select id,created_at,payload from maintenance_backups where state='available' order by created_at desc"):
             meta = json.loads(raw['payload'])
             backup_index.setdefault(meta['original_path'], []).append({'id':raw['id'], 'created_at':raw['created_at'], 'type':meta['type']})
-        unique = set()
+        unique, target_inodes = set(), {}
         total = {'bytes': 0, 'allocated_bytes': 0}
         for raw in raw_rows:
             row = dict(raw); p = Path(row['path'])
@@ -472,15 +610,14 @@ class Manager:
                 entry['health'] = 'ok' if p.exists() else 'broken-link'
             entry['real_path'] = real_path
             recorded = dates[row['id']]
-            entry['installation'] = installation(p, recorded['installed_at'], recorded['first_seen_at'])
+            entry['installation'] = installation(p, recorded['installed_at'], recorded['first_seen_at'], installer_cache)
             entry['classification'] = labels.get(entry['real_path'], {'category':'', 'tags':[]})
-            classification_state = self.db.execute('select payload from classification_state where real_path=?',(entry['real_path'],)).fetchone()
-            entry['classification_meta'] = json.loads(classification_state['payload']) if classification_state else {}
+            entry['classification_meta'] = classification_states.get(real_path, {})
             if reusable:
                 entry['local_source_candidates'] = saved.get('local_source_candidates', [])
             else:
                 if real_path not in candidate_cache:
-                    candidate_cache[real_path] = file_candidates(self.a, p) if row['kind']=='skill' and p.is_dir() and not entry['ownership']['read_only'] else []
+                    candidate_cache[real_path] = file_candidates(self.a, p, registry=self.r) if row['kind']=='skill' and p.is_dir() and not entry['ownership']['read_only'] else []
                 entry['local_source_candidates'] = candidate_cache[real_path] + searched_candidates.get(real_path, [])
             entry['usage_frequency'] = frequencies.get(entry['real_path'], {'today':None, '7':None, '14':None, '30':None, '90':None})
             entry['usage_last_recorded_at'] = latest_reads.get(entry['real_path'])
@@ -526,13 +663,13 @@ class Manager:
             entry['usage_note'] = 'Recorded reads are evidence, not proof of complete runtime coverage.'
             source_key = (entry['real_path'], state['source'], row.get('metadata_json'), row.get('github_url'), row.get('github_ref'), row.get('github_path'))
             if source_key not in sources:
-                sources[source_key] = (json.loads(state['source']) if state['source'] else saved.get('source') if reusable else None) if lightweight else self.source(row, state)
+                sources[source_key] = (json.loads(state['source']) if state['source'] else saved.get('source') if reusable else None) if lightweight else self.source(row, state, installer_cache=installer_cache)
             entry['source'] = sources[source_key]
             entry['update_check'] = json.loads(state['last_check']) if state['last_check'] else None
             if not lightweight and entry['update_check'] and entry['update_check'].get('local_fingerprint') and entry['present']:
                 try:
                     if real_path not in fingerprints:
-                        fingerprints[real_path] = fingerprint(manifest(p.resolve()))
+                        fingerprints[real_path] = fingerprint(manifest(p.resolve(), ignore_git=True))
                     if fingerprints[real_path] != entry['update_check']['local_fingerprint']:
                         entry['update_check'] = {**entry['update_check'], 'status':'stale', 'message':'Local content changed since the check'}
                 except (OSError, ValueError):
@@ -556,14 +693,19 @@ class Manager:
                         for k in total:
                             total[k] += entry['target_space'].get(k, 0)
                 else:
-                    entry['space'] = size(p) if p.is_symlink() else target_sizes.get(entry['real_path']) or size(p)
-                    if entry['real_path'] not in target_sizes:
-                        target_sizes[entry['real_path']] = size(p.resolve()) if p.is_symlink() else entry['space']
-                    entry['target_space'] = target_sizes[entry['real_path']]
-                    contribution = size(p, unique)
-                    target_contribution = size(p.resolve(), unique) if p.is_symlink() and p.exists() else {'bytes':0,'allocated_bytes':0}
-                    for k in total:
-                        total[k] += contribution[k] + target_contribution[k]
+                    own_inodes = {}
+                    if p.is_symlink():
+                        entry['space'] = size(p, inode_sizes=own_inodes)
+                    if real_path not in target_sizes:
+                        records = target_inodes.setdefault(real_path, {})
+                        target_sizes[real_path] = size(p.resolve(), inode_sizes=records)
+                    entry['target_space'] = target_sizes[real_path]
+                    if not p.is_symlink(): entry['space'] = entry['target_space']
+                    for records in (own_inodes, target_inodes[real_path]):
+                        for inode, occupied in records.items():
+                            if inode not in unique:
+                                unique.add(inode)
+                                for k in total: total[k] += occupied[k]
             except OSError as exc:
                 entry['space'] = {'error': type(exc).__name__}
             result.append(entry)
@@ -587,13 +729,16 @@ class Manager:
         for entry in result:
             entry.setdefault('known_agents', [])
             entry.setdefault('shared', False)
+        from check_results import reconcile
+        reconcile(result)
         last_scan = self.db.execute('select payload from maintenance_scans order by rowid desc limit 1').fetchone()
+        from recovery import stored_space
         payload = {'items': result, 'last_scan':json.loads(last_scan['payload']) if last_scan else None,
                 'excluded_registered_paths':excluded, 'shared_targets': [[e['id'] for e in g] for g in by_real.values() if g[0]['shared']],
                 'locations':locations_list, 'location_warnings':location_warnings,
                 'same_source_copies': [[e['id'] for e in g] for g in by_source.values() if len(g) > 1],
                 'cleanup_candidates': sorted([{'id':i['id'],'name':i['name'],'path':i['path'],'space':i['space'],'usage_status':i['usage_status'],'reason':'Review occupied space; no inactivity claim'} for i in result if i['present'] and not i['protected'] and i['source_type']!='builtin'],key=lambda i:i['space'].get('allocated_bytes',0),reverse=True),
-                'space': {'installed_unique': total, **({key:snapshot.get('space',{}).get(key,{'bytes':0,'allocated_bytes':0}) for key in ('backups','quarantine','staged_plans')} if ids is not None or lightweight else {'backups':size(self.home/'backups'),'quarantine':size(self.home/'quarantine'),'staged_plans':size(self.home/'plans')})},
+                'space': {'installed_unique': total, **stored_space(self), 'staged_plans':snapshot.get('space',{}).get('staged_plans',{'bytes':0,'allocated_bytes':0}) if ids is not None or lightweight else size(self.home/'plans')},
                 'note': 'Allocated sizes are filesystem estimates; shared targets/hardlinks counted once. References identify scanned paths, not loaded sessions or complete Agent consumers. Unknown usage is not inactivity.'}
         payload['insights'] = summarize(result)
         from taxonomy import names
@@ -610,11 +755,14 @@ class Manager:
         if ids is not None:
             payload['scope']={'ids':ids,'refreshed_ids':[r['id'] for r in raw_rows]}
             # Patch saved rows without pretending unrelated stale rows were checked.
-            cached = self.cached_inventory()
+            cached = snapshot
             if cached.get('cache', {}).get('available') and not payload['cache']['dirty']:
                 replaced = set(ids) | set(payload['scope']['refreshed_ids'])
                 cached['items'] = [i for i in cached['items'] if i['id'] not in replaced] + result
+                cached['cache']['recheck_ids'] = [i for i in cached['cache'].get('recheck_ids', []) if i not in replaced]
+                payload['cache']['recheck_ids'] = cached['cache']['recheck_ids']
                 cached['insights'] = summarize(cached['items'])
+                payload['insights'] = cached['insights']
                 cached['cleanup_candidates'] = cached['insights']['space_review']
                 unique = {i['real_path']:i.get('target_space', i.get('space', {})) for i in cached['items'] if i['present'] and i['health']!='broken-link'}
                 cached['space']['installed_unique'] = {key:sum(s.get(key,0) for s in unique.values()) for key in ('bytes','allocated_bytes')}
@@ -730,6 +878,8 @@ class Manager:
             incoming=selection['source']
             source={'provider':incoming['source_type'], 'url':incoming['source_url'], 'ref':incoming.get('source_ref',''),
                     'path':remote_path if remote_path != '.' else '', 'evidence':'user-confirmed'}
+            if source['provider'] in ('git', 'skillhub'):
+                source.update(channel=incoming.get('channel'), slug=incoming.get('slug', ''))
             plan={'id':pid, 'action':'install', 'created_at':stamp(), 'target':str(target), 'install_root':str(root),
                   'install_agents':next(r['agents'] for r in self.install_roots()['roots'] if r['path']==str(root)),
                   'item':{k:v for k,v in row.items() if k not in ('metadata','description')}, 'source':source,
@@ -745,32 +895,51 @@ class Manager:
             shutil.rmtree(directory)
             raise
 
-    def source(self, row, state=None):
+    def source(self, row, state=None, installer_cache=None):
+        context = getattr(self, '_source_context', None)
+        if context is not None and row['id'] in context['sources']:
+            return context['sources'][row['id']]
+        result = self._source(row, state, installer_cache)
+        if context is not None: context['sources'][row['id']] = result
+        return result
+
+    def _source(self, row, state=None, installer_cache=None):
+        context = getattr(self, '_source_context', None)
+        if context is not None and installer_cache is None: installer_cache = context['installer']
         state = self.state(row) if state is None else state
         if state['source']:
             source = json.loads(state['source'])
-            if source.get('provider') in ('skillhub', 'git'):
+            if source.get('provider') in ('skillhub', 'git') and not source.get('channel'):
                 from update_providers import source as registered_source
-                return registered_source(self.a, source['url'], source.get('ref', ''), source.get('path', ''), source.get('evidence', 'installed-metadata')) or source
+                recovered = registered_source(self.a, source['url'], source.get('ref', ''), source.get('path', ''), source.get('evidence', 'installed-metadata'), registry=self.r)
+                if recovered: return recovered
             return source
+        from library_metadata import locked_source
+        recovered = locked_source(self.a, row['path'], registry=self.r, installer_cache=installer_cache)
+        if recovered: return recovered
         info = self.a.remote_info_for_cap(row)
-        if not info:
-            from library_metadata import locked_source
-            recovered = locked_source(self.a, row['path'])
-            if recovered: return recovered
         if not info:
             folder = Path(row['path'])
             parent = next((p for p in (folder,*folder.parents) if (p/'.git').exists()),None)
             if parent:
                 try:
-                    run = lambda *args: subprocess.run(['git','-C',str(folder),*args],capture_output=True,text=True,timeout=3,check=True).stdout.strip()
-                    url = run('remote','get-url','origin')
+                    key = str(parent.resolve())
+                    cache = context['git'] if context is not None else {}
+                    if key not in cache:
+                        run = lambda *args: subprocess.run(['git','-C',key,*args],capture_output=True,text=True,timeout=3,check=True).stdout.strip()
+                        try:
+                            url = run('remote','get-url','origin')
+                            root = Path(run('rev-parse','--show-toplevel'))
+                            ref = run('rev-parse','--abbrev-ref','HEAD')
+                            cache[key] = (url, root, ref if ref!='HEAD' else run('rev-parse','HEAD'))
+                        except (OSError, subprocess.SubprocessError):
+                            cache[key] = None
+                    if cache[key] is None: return None
+                    url, root, ref = cache[key]
                     from library_metadata import repository
-                    git_source = repository(self.a, url, evidence='git-origin')
+                    git_source = repository(self.a, url, evidence='git-origin', registry=self.r)
                     if git_source:
-                        root = Path(run('rev-parse','--show-toplevel'))
-                        ref = run('rev-parse','--abbrev-ref','HEAD')
-                        git_source.update(ref=ref if ref!='HEAD' else run('rev-parse','HEAD'), path=str(folder.resolve().relative_to(root.resolve())).replace('\\','/') if folder.resolve()!=root.resolve() else '')
+                        git_source.update(ref=ref, path=str(folder.resolve().relative_to(root.resolve())).replace('\\','/') if folder.resolve()!=root.resolve() else '')
                         return git_source
                 except (OSError,ValueError,subprocess.SubprocessError):
                     pass
@@ -797,6 +966,11 @@ class Manager:
         return source
 
     def remote_json(self, url):
+        from update_checks import path_lock
+        with path_lock('github-json:'+url):
+            return self._remote_json(url)
+
+    def _remote_json(self, url):
         cache = getattr(self, '_remote_json_cache', None)
         if cache is None: self._remote_json_cache = cache = {}
         if url not in cache:
@@ -847,12 +1021,23 @@ class Manager:
             source = self.source(row)
             candidates = file_candidates(self.a,row['path']) if not source else []
             trace = []
-            if remote and not source:
+            if remote and source and source.get('provider') == 'github':
+                try:
+                    found = self.probe_source(row['id'], source['url'], source.get('ref',''))
+                    candidates.extend(found['candidates'])
+                    trace.append({'channel':'original-repository','status':'partial' if found['truncated'] else 'success',
+                                  'candidates':len(found['candidates'])})
+                except Exception as exc:
+                    from diagnostics import classify
+                    code, message = classify(exc)
+                    trace.append({'channel':'original-repository','status':'failed','reason':message,'code':code})
+            if remote and not any(c.get('evidence') == 'content-match' for c in candidates):
                 from source_search import search, cached_matches
                 candidates.extend(cached_matches(self,row))
                 found = search(self, row['name'])
                 candidates.extend(found['candidates'])
-                trace=found['trace']
+                trace.extend(found['trace'])
+            if remote:
                 from source_search import save_candidates
                 save_candidates(self,Path(row['path']).resolve(),candidates,trace)
             results.append({'id':row['id'],'name':row['name'],'source':source,'candidates':candidates,'trace':trace})
@@ -885,6 +1070,7 @@ class Manager:
         return {'candidates':candidates[:20],'truncated':bool(tree.get('truncated')),'commit':commit,'note':'Review the exact skill directory before confirming a source.'}
 
     def remote(self, row, folder):
+        folder = Path(folder).resolve()
         source = self.source(row)
         if not source:
             raise ValueError('Source unknown; bind the confirmed repository and skill subdirectory first')
@@ -898,13 +1084,37 @@ class Manager:
         info = self.a.parse_github_url(source['url'])
         if not info:
             raise ValueError('Invalid GitHub source')
+        info = {**info, '_skip_unrelated_links':True}
         safe_relative(source['path'])
         api = f"https://api.github.com/repos/{info['owner']}/{info['repo']}"
-        ref = source['ref'] or self.remote_json(api)['default_branch']
+        from github_transport import can_fallback, resolve
         from urllib.parse import quote
-        commit = self.remote_json(api + '/commits/' + quote(ref, safe=''))['sha']
+        api_state = getattr(self, '_github_api_state', {})
+        transport = 'github-api'
+        if api_state.get('limited'):
+            transport = 'git-https'
+            commit, ref = resolve(self, source)
+        else:
+            try:
+                ref = source['ref'] or self.remote_json(api)['default_branch']
+                commit = self.remote_json(api + '/commits/' + quote(ref, safe=''))['sha']
+            except Exception as exc:
+                if not can_fallback(exc): raise
+                transport = 'git-https'
+                from diagnostics import classify
+                if classify(exc)[0] == 'remote_rate_limit':
+                    from update_checks import rate_limit_deadline
+                    api_state['limited'] = True
+                    api_state['retry_at'] = rate_limit_deadline(exc)
+                commit, ref = resolve(self, source)
+        info['_direct_archive'] = transport == 'git-https'
+        if getattr(self,'_targeted_checks',False) and getattr(self,'_comparison_only',False):
+            from github_subset import snapshot
+            skill, stats = snapshot(self,source,commit,folder,Path(row['path']).resolve(),use_git=transport=='git-https')
+            return skill, {**source,'resolved_ref':ref,'commit':commit,'transport':transport,**stats}
         archive_home = getattr(self,'_repository_archive_home',None)
         if archive_home:
+            archive_home = Path(archive_home).resolve()
             key = hashlib.sha256((source['url']+commit).encode()).hexdigest()
             cache = getattr(self,'_archive_cache',None)
             if cache is None: self._archive_cache = cache = {}
@@ -916,13 +1126,20 @@ class Manager:
             root=cache[key]
         else: root = self.a.download_github_archive(info, commit, folder)
         skill = root / source['path']
+        link_index = root.parent / '.asm-archive-links.json'
+        if link_index.is_file():
+            selected_path = skill.relative_to(root.parent)
+            for archived in json.loads(link_index.read_text(encoding='utf-8')):
+                linked = Path(archived)
+                if linked == selected_path or linked in selected_path.parents or selected_path in linked.parents:
+                    raise ValueError('Remote Skill contains symlinks; manual review required')
         if not (skill / 'SKILL.md').is_file():
             raise ValueError('Confirmed source path does not contain SKILL.md; bind its exact subdirectory')
         # Reject archive links; a downloaded skill must not escape its staged tree.
         m = manifest(skill)
         if any(e['kind'] == 'link' for e in m.values()):
             raise ValueError('Remote archive contains symlinks; manual review required')
-        return skill, {**source, 'resolved_ref': ref, 'commit': commit}
+        return skill, {**source, 'resolved_ref': ref, 'commit': commit, 'transport':transport}
 
     def check(self, row):
         if getattr(self, '_use_check_cache', False):
@@ -942,13 +1159,17 @@ class Manager:
         return self._check_remote(row)
 
     def _check_remote(self, row):
-        checked = {'checked_at': stamp(), 'status': 'source_unknown', 'id': row['id']}
+        checked = {'checked_at': dt.datetime.now(dt.timezone.utc).isoformat(), 'status': 'source_unknown', 'id': row['id']}
         if self.source(row):
             try:
                 import tempfile
                 with tempfile.TemporaryDirectory(prefix='asm-check-') as tmp:
-                    skill, source = self.remote(row, Path(tmp))
-                    current = manifest(Path(row['path']).resolve())
+                    # The staging root is ours; canonicalize OS aliases such as macOS /var.
+                    previous = getattr(self,'_comparison_only',False)
+                    self._comparison_only = True
+                    try: skill, source = self.remote(row, Path(tmp).resolve())
+                    finally: self._comparison_only = previous
+                    current = manifest(Path(row['path']).resolve(), ignore_git=True)
                     remote = manifest(skill)
                     delta = diff(current, remote)
                     state = self.state(row)
@@ -964,13 +1185,22 @@ class Manager:
                 from diagnostics import record
                 event = record(self.home, exc, 'check')
                 checked.update(status='check_failed', error=event['error'], error_id=event['error_id'], message=event['message'], code=event['code'])
+                from network_io import transient
+                checked['retryable'] = transient(exc)
+                if event.get('source_issue'):checked['source_issue']=event['source_issue']
+                if (self.source(row) or {}).get('provider') == 'skillhub' and event['code'] == 'remote_not_found':
+                    checked['message'] = '更新源找不到此 Skill 或版本，请在来源设置核对地址；不会自动替换成同名项目。'
                 if event['code'] == 'remote_rate_limit':
                     from update_checks import rate_limit_deadline
+                    from urllib.parse import urlparse
                     checked['retry_at'] = rate_limit_deadline(exc)
-        self.state(row)
-        self.db.execute('update maintenance_items set last_check=? where id=?', (json.dumps(checked), row['id']))
-        self.db.commit()
-        self.invalidate_cache()
+                    remote_url = urlparse(getattr(exc, 'url', '') or '')
+                    checked['rate_limit_scope'] = getattr(exc, 'rate_limit_scope', None) or (('github-archive' if remote_url.hostname == 'codeload.github.com' or '/zipball/' in remote_url.path else 'github-api') if (self.source(row) or {}).get('provider') == 'github' else 'provider')
+        if not getattr(self, '_defer_check_save', False):
+            self.state(row)
+            self.db.execute('update maintenance_items set last_check=? where id=?', (json.dumps(checked), row['id']))
+            self.db.commit()
+            self.invalidate_cache()
         return checked
 
     def backups(self, verify=True, ids=None):
@@ -1037,10 +1267,16 @@ class Manager:
         write_json(container / 'manifest.json', meta)
         self.db.execute('insert into maintenance_backups values (?,?,?,?,?)', (bid, stamp(), str(container), json.dumps(meta), 'available'))
         self.db.commit()
-        if move:
-            os.replace(source, container / 'content')
-        else:
-            copy_path(source, container / 'content')
+        try:
+            if move:
+                os.replace(source, container / 'content')
+            else:
+                copy_path(source, container / 'content')
+        except Exception:
+            # Keep partial content for diagnosis, but never offer it as a ready backup.
+            self.db.execute("update maintenance_backups set state='invalid' where id=?", (bid,))
+            self.db.commit()
+            raise
         if not self.verify_backup(bid)['valid'] or (not move and manifest(source) != before):
             if move and not exists(source) and exists(container / 'content'):
                 os.replace(container / 'content', source)
@@ -1087,6 +1323,8 @@ class Manager:
         try:
             if action in ('purge','trash-backup','restore-backup'):
                 container, meta = self.backup_record(backup_id)
+                from recovery import ensure_storage_safe
+                ensure_storage_safe(self, container)
                 self.ensure_backup_unused(backup_id, check_retained=action!='restore-backup')
                 if action != 'purge':
                     from backup_recycle import validate
@@ -1159,7 +1397,11 @@ class Manager:
                                 raise ValueError('Source changed during staging')
                         plan.update(source_target=str(src), source_before=fingerprint(source_before), source_id=source_row['id'])
                     else:
+                        from update_providers import identity
+                        plan['bound_source'] = self.source(row)
                         payload_src, remote = self.remote(row, directory)
+                        if identity(self.source(row)) != identity(plan['bound_source']):
+                            raise ValueError('Bound source changed during staging; preview again')
                         copy_path(payload_src, payload)
                         plan['source'] = remote
                     if action == 'share':
@@ -1223,20 +1465,21 @@ class Manager:
             shutil.rmtree(directory)
             raise
 
-    def operation(self, oid, action, state, payload):
+    def operation(self, oid, action, state, payload, commit=True):
         self.db.execute('insert into maintenance_operations values (?,?,?,?,?,?) on conflict(id) do update set updated_at=excluded.updated_at,state=excluded.state,payload=excluded.payload',
                         (oid, stamp(), stamp(), action, state, json.dumps(payload)))
-        self.db.commit()
-
-        self.invalidate_cache()
+        self.db.execute('update maintenance_inventory_cache set generation=generation+1 where id=1')
+        if commit:
+            self.db.commit()
 
     def update_now(self, row):
         from recovery import skill_info
         from version_policy import normalize_check
-        before = fingerprint(manifest(Path(row['path'])))
+        current = manifest(Path(row['path']))
+        before = fingerprint(current)
         check = json.loads(self.state(row)['last_check'] or '{}')
         check = normalize_check(check, skill_info(self, Path(row['path'])).get('version'))
-        if check.get('status') != 'update_available' or check.get('local_fingerprint') != before:
+        if check.get('status') != 'update_available' or check.get('local_fingerprint') != comparison_fingerprint(current):
             raise ValueError('请先重新检查更新，本地内容或更新记录已变化')
         source = self.source(row)
         plan = self.plan('update', row, allow_changes=True)
@@ -1251,6 +1494,16 @@ class Manager:
             if record and record['state'] == 'preview':
                 self.discard_plan(plan['id'])
             raise
+
+    def validate_update_source(self, plan):
+        from update_providers import identity, validate_source
+        bound = plan.get('bound_source')
+        if not bound or identity(self.source(self.select(plan['item']['id']))) != identity(bound):
+            raise ValueError('Bound source changed; preview again')
+        if bound.get('provider') in ('git', 'skillhub'):
+            validate_source(self.a, bound, registry=self.r)
+        elif bound.get('provider') == 'github' and not self.r.channel_enabled('github'):
+            raise ValueError('GitHub 更新渠道已停用')
 
     def apply(self, pid):
         from backup_recycle import apply as apply_recycle
@@ -1269,6 +1522,8 @@ class Manager:
             action = plan['action']; directory = self.home / 'plans' / pid
             if action == 'purge':
                 target, _ = self.backup_record(plan['backup_id'])
+                from recovery import ensure_storage_safe
+                ensure_storage_safe(self, target)
                 self.ensure_backup_unused(plan['backup_id'],pid)
                 from backup_recycle import entry
                 if entry(self, plan['backup_id']) != plan.get('recycle_marker'):
@@ -1277,6 +1532,9 @@ class Manager:
             else:
                 if action == 'install':
                     self.install_root(plan['install_root'])
+                    if plan['source'].get('provider') in ('git', 'skillhub'):
+                        from update_providers import validate_source
+                        validate_source(self.a, plan['source'], registry=self.r)
                     current_agents = next(r['agents'] for r in self.install_roots()['roots'] if r['path']==plan['install_root'])
                     if 'install_agents' in plan and current_agents != plan['install_agents']:
                         raise ValueError('Known Agent references changed; preview again')
@@ -1287,15 +1545,21 @@ class Manager:
                 if self.affected(target) != plan['affected_references']: raise ValueError('Known Agent references changed; preview again')
                 if (self.state(plan['item'])['protected'] or self.affected_protected(target)) and action in ('share','delete','deactivate','sync','update','restore'):
                     raise ValueError('Target became protected')
-                if action in ('share','update','sync','restore','install') and fingerprint(manifest(directory / 'content')) != plan['after']:
-                    raise ValueError('Staged content changed; preview again')
+                if action in ('share','update','sync','restore','install'):
+                    staged_manifest = manifest(directory / 'content')
+                    if fingerprint(staged_manifest) != plan['after']:
+                        raise ValueError('Staged content changed; preview again')
                 if plan.get('source_target') and fingerprint(manifest(Path(plan['source_target']))) != plan['source_before']:
                     raise ValueError('Source changed; preview again')
                 if action=='share':
                     source_row=self.select(plan['source_id'])
                     self.validate_target(Path(source_row['path']),source_row)
                     if self.affected(Path(plan['source_target']))!=plan['retained_references'] or self.affected_protected(Path(plan['source_target'])) or self.source(plan['item'])!=self.source(source_row):raise ValueError('Retained source references, protection or sources changed; preview again')
-                if plan.get('destination') and exists(Path(plan['destination'])): raise ValueError('Destination appeared; preview again')
+                if action == 'update':
+                    self.validate_update_source(plan)
+                if plan.get('destination'):
+                    self.validate_target(plan['destination'])
+                    if exists(Path(plan['destination'])): raise ValueError('Destination appeared; preview again')
             oid = uid('op'); result = {'id': oid, 'plan_id': pid, 'action': action, 'target': str(target), 'backups': []}
             self.operation(oid, action, 'running', result)
             self.db.execute("update maintenance_plans set state='running' where id=?", (pid,)); self.db.commit()
@@ -1303,6 +1567,7 @@ class Manager:
             temp = target.with_name('.asm-stage-' + oid)
             moved = False
             installed = False
+            relocated = False
             try:
                 existing_parent = next(p for p in (target.parent,*target.parent.parents) if p.exists())
                 free_before = shutil.disk_usage(existing_parent).free
@@ -1312,16 +1577,23 @@ class Manager:
                     if plan['backup_id'].startswith('historical-'):
                         self.db.execute("update maintenance_recovery_candidates set state='purged' where id=?",(plan['backup_id'],))
                 elif action == 'delete':
+                    self.validate_target(target, plan['item'])
                     b = self.make_backup(plan['item'], action, oid, move=True)
                     result['backups'].append(b)
                     result['net_freed_bytes_estimate'] = 0
                     self.db.execute("update capabilities set health='missing' where id=?", (plan['item']['id'],))
+                    result['inventory_ids'] = [r['id'] for r in plan['affected_references']]
                 elif action in ('activate','deactivate'):
                     b = self.make_backup(plan['item'], action, oid)
                     result['backups'].append(b); self.operation(oid, action, 'running', result)
-                    dest = Path(plan['destination']); dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest = Path(plan['destination'])
+                    self.validate_target(dest)
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    self.validate_target(dest)
+                    if exists(dest): raise ValueError('Destination appeared during backup; preview again')
                     if fingerprint(manifest(target)) != plan['before']: raise ValueError('Target changed during backup; preview again')
                     os.replace(target, dest)
+                    relocated = True
                     self.db.execute('update capabilities set path=?,status=? where id=?', (str(dest), 'active' if action == 'activate' else 'inactive', plan['item']['id']))
                     result['destination'] = str(dest)
                 else:
@@ -1330,6 +1602,7 @@ class Manager:
                     if exists(target):
                         b = self.make_backup(plan['item'], action, oid)
                         result['backups'].append(b)
+                    self.validate_target(target, plan['item'])
                     target.parent.mkdir(parents=True, exist_ok=True)
                     copy_path(directory / 'content', temp)
                     if fingerprint(manifest(temp)) != plan['after']: raise ValueError('Staged copy verification failed')
@@ -1337,13 +1610,16 @@ class Manager:
                     self.operation(oid, action, 'running', result)
                     if action == 'install' and exists(target):
                         raise ValueError('Target changed: appeared during staging; installation never overwrites an existing directory')
+                    self.validate_target(target, plan['item'])
+                    if action == 'update': self.validate_update_source(plan)
+                    if action == 'install' and plan['source'].get('provider') in ('git', 'skillhub'):
+                        validate_source(self.a, plan['source'], registry=self.r)
                     if fingerprint(manifest(target)) != plan['before']: raise ValueError('Target changed during backup/staging; preview again')
                     if exists(target): os.replace(target, hold); moved = True
                     os.replace(temp, target)
                     installed = True
                     if fingerprint(manifest(target)) != plan['after']: raise ValueError('Installed content verification failed')
                     if action=='share' and fingerprint(manifest(target.resolve()))!=plan['source_before']:raise ValueError('Shared source changed during apply')
-                    if exists(hold): remove_path(hold)
                     if plan.get('item',{}).get('id'):
                         self.db.execute('update maintenance_items set baseline=? where id=?', (plan.get('baseline'), plan['item']['id']))
                         self.db.execute("update capabilities set health='ok' where id=?", (plan['item']['id'],))
@@ -1362,11 +1638,11 @@ class Manager:
                     result['inventory_ids'] = [c['id'] for c, _ in changed]
                     for cap, raw in changed:
                         self.db.execute('update maintenance_items set last_check=null where id=?', (cap['id'],))
-                        source = (self.source(raw) or {}) if action == 'update' else {}
+                        source = (self.source(cap) or {}) if action == 'update' else {}
                         if action == 'update' and all(source.get(k,'') == (plan.get('source') or {}).get(k,'') for k in ('provider','url','ref','path')):
                             checked = {'id':cap['id'], 'status':'latest', 'checked_at':stamp(),
                                        'source':plan['source'], 'remote_version':cap.get('version'),
-                                       'remote_update_available':False, 'local_fingerprint':plan['after'],
+                                       'remote_update_available':False, 'local_fingerprint':comparison_fingerprint(staged_manifest),
                                        'basis':'verified-update'}
                             self.db.execute('update maintenance_items set last_check=? where id=?', (json.dumps(checked), cap['id']))
                 if action=='restore' and plan.get('snapshot_entry'):
@@ -1377,37 +1653,50 @@ class Manager:
                     category=labels.get('category','');tags=labels.get('tags',[])
                     if category in ('',*CATEGORIES) and isinstance(tags,list) and all(t in TAGS for t in tags):
                         self.db.execute('insert or replace into maintenance_labels values (?,?,?)',(str(target.resolve()),category,json.dumps(tags)))
-                self.db.commit()
-                if action in ('install','update'):
-                    try:
-                        from classification import classify
-                        with self.db:
-                            result['classification']=classify(self,dict(self.select(plan['item']['id'])),apply=True)['after']
-                    except Exception as classification_error:
-                        result['classification_pending']=True
-                        result['classification_error']=type(classification_error).__name__
                 result['filesystem_free_delta_bytes'] = shutil.disk_usage(target.parent).free - free_before
                 result['space_note'] = 'Filesystem free delta includes concurrent system activity; quarantine frees approximately zero.'
                 result['state'] = 'succeeded'
-                self.operation(oid, action, 'succeeded', result)
+                self.operation(oid, action, 'succeeded', result, commit=False)
                 if action == 'install':
                     self.db.execute('insert into maintenance_item_dates(id,first_seen_at,installed_at) values (?,?,?) on conflict(id) do update set installed_at=excluded.installed_at', (cap['id'],stamp(),stamp()))
                 self.db.execute("update maintenance_plans set state='applied' where id=?", (pid,)); self.db.commit()
-                self.r.log_operation(action, plan.get('item',{}).get('id', plan.get('backup_id','')), result)
-                if directory.exists(): shutil.rmtree(directory)
-                self.invalidate_cache()
-                return result
             except Exception as exc:
+                self.db.rollback()
                 if exists(hold):
                     if exists(target): remove_path(target)
                     os.replace(hold, target)
                 elif installed and action in ('share','restore','sync','update','install') and not result.get('originally_present',True) and exists(target):
                     remove_path(target)
+                elif relocated and exists(dest) and not exists(target):
+                    os.replace(dest, target)
+                elif action == 'delete' and result['backups'] and not exists(target):
+                    container, _ = self.backup_record(result['backups'][-1]['id'])
+                    copy_path(container / 'content', target)
                 if exists(temp): remove_path(temp)
                 result.update(state='failed', error=redact(str(exc)))
                 self.operation(oid, action, 'failed', result)
                 self.db.execute("update maintenance_plans set state='failed' where id=?", (pid,)); self.db.commit()
                 raise ValueError(f"Operation {oid} failed; see history: {redact(str(exc))}") from exc
+            # Filesystem rollback remains possible until the success record commits.
+            if action in ('install','update'):
+                try:
+                    from classification import classify
+                    with self.db:
+                        result['classification']=classify(self,dict(self.select(plan['item']['id'])),apply=True)['after']
+                except Exception as classification_error:
+                    result['classification_pending']=True
+                    result['classification_error']=type(classification_error).__name__
+            try:
+                if exists(hold): remove_path(hold)
+                if directory.exists(): shutil.rmtree(directory)
+            except OSError:
+                result['cleanup_pending'] = True
+            try:
+                self.r.log_operation(action, plan.get('item',{}).get('id', plan.get('backup_id','')), result)
+            except Exception:
+                self.db.rollback()
+                result['history_pending'] = True
+            return result
 
     def library_last_reads(self, raw_rows, now=None):
         """Latest valid non-future read, including evidence older than 90 days."""
@@ -1608,13 +1897,16 @@ def emit(value):
 
 def register(sub, legacy):
     def run(args):
+        m = None
         try:
             m = Manager(legacy)
             c = args.command
-            if c in ('classification-preview','classification-apply','classification-undo','discover-sources-batch','source-search-policy','source-search-policy-update'):
+            if c in ('discovery-cached','discovery-refresh','discovery-verify','classification-preview','classification-apply','classification-undo','discover-sources-batch','source-search-policy','source-search-policy-update'):
                 result=dispatch(m,{'action':c,**vars(args)})
             elif c in ('discover-backups','retain-backup','ignore-backup-candidate','import-backup','preview-purge-many','apply-purge-many'):
                 result=dispatch(m,{'action':c,**vars(args),'retained':not getattr(args,'off',False),'confirmed':getattr(args,'yes',False)})
+            elif c in ('cache-inspect','cache-clean'):
+                result=dispatch(m,{'action':c,'fingerprint':getattr(args,'fingerprint',None),'confirmed':getattr(args,'yes',False)})
             elif c == 'inventory': result = m.inventory()
             elif c == 'import-usage': result = m.import_usage(args.days,args.replay,[{'agent':args.log_agent,'path':args.log_path}] if args.log_path else None)
             elif c == 'set-labels': result = m.set_labels(args.targets,args.category,args.tags,args.mode)
@@ -1623,7 +1915,8 @@ def register(sub, legacy):
             elif c == 'scan': result = m.scan(args.project, args.import_logs)
             elif c == 'check-updates':
                 rows = [m.select(args.name,args.platform or '')] if args.name else [dict(r) for r in m.r.all_capabilities("c.kind='skill'" + (" and c.platform=?" if args.platform else ''), (args.platform,) if args.platform else ())]
-                result = {'checks': [m.check(row) for row in rows]}
+                from check_batches import run as check_batch
+                result = check_batch(m, [r['id'] for r in rows])
             elif c == 'source-bind': result = m.bind_source(m.select(args.name,args.platform or ''), args.url, args.ref, args.path)
             elif c == 'backup': result = m.backup(m.select(args.name,args.platform or ''))
             elif c == 'backups': result = m.backups()
@@ -1651,6 +1944,8 @@ def register(sub, legacy):
             emit(result)
         except (ValueError,OSError) as exc:
             emit({'error':redact(str(exc))}); raise SystemExit(1)
+        finally:
+            if m is not None: m.db.close()
     # Replace legacy handlers only for operations now supported by this common core.
     for c in ('scan','check-updates','backup','delete','update','activate','deactivate','usage'):
         p = sub.choices[c]
@@ -1661,6 +1956,14 @@ def register(sub, legacy):
         elif c == 'update': p.add_argument('--allow-local-changes',action='store_true')
         elif c == 'usage':
             p.add_argument('name',nargs='?');p.add_argument('--platform')
+    for c in ('discovery-cached','discovery-refresh','discovery-verify'):
+        p=sub.add_parser(c,help='Read official Skill catalogs without installing or binding sources');p.set_defaults(func=run)
+        if c=='discovery-verify':p.add_argument('id')
+        else:
+            p.add_argument('--view',choices=['trending','new','search'],default='trending');p.add_argument('--query',default='')
+    p=sub.add_parser('cache-inspect',help='Inspect registered staging older than 24 hours');p.set_defaults(func=run)
+    p=sub.add_parser('cache-clean',help='Remove only inspected expired manager staging');p.set_defaults(func=run)
+    p.add_argument('--fingerprint',required=True);p.add_argument('--yes',action='store_true')
     p=sub.add_parser('import-usage',help='Import Agent usage log evidence');p.set_defaults(func=run)
     p.add_argument('--days',type=int,default=90);p.add_argument('--replay',action='store_true');p.add_argument('--log-path');p.add_argument('--log-agent',choices=['codex','claude_code','hermes','openclaw'],default='codex')
     p=sub.add_parser('set-labels',help='Edit one category and up to three tags');p.set_defaults(func=run)
@@ -1725,7 +2028,17 @@ def api_dispatch(legacy, payload):
 
 def dispatch(m, payload):
     action = payload.get('action')
+    if action == 'translate-descriptions':
+        import description_translation
+        return description_translation.descriptions(m, payload)
+    if action in ('discovery-cached','discovery-refresh','discovery-verify'):
+        import skill_discovery
+        return skill_discovery.dispatch(m,payload)
+    if action in ('cache-inspect','cache-clean'):
+        import cache_cleanup
+        return cache_cleanup.inspect(m) if action=='cache-inspect' else cache_cleanup.clean(m,payload.get('fingerprint'),payload.get('confirmed'))
     import web_execution
+    if action=='uninstall-references': return web_execution.uninstall_references(m,payload.get('ids'))
     if action in web_execution.ACTIONS: return web_execution.dispatch(m, payload)
     if action in ('classification-preview','classification-apply','classification-undo'):
         import classification
@@ -1813,8 +2126,15 @@ def dispatch(m, payload):
             # Live progress comes from Jobs; a saved running record is conservatively unfinished.
             run = {**run, 'state':'interrupted'}
         return {'run':run}
-    if action == 'inventory': return m.inventory(payload.get('ids'), lightweight=bool(payload.get('lightweight')))
-    if action == 'inventory-cached': return m.cached_inventory()
+    if action in ('inventory', 'inventory-cached'):
+        value = m.cached_inventory() if action == 'inventory-cached' else m.inventory(payload.get('ids'), lightweight=bool(payload.get('lightweight')))
+        return inventory_summary(value) if payload.get('summary') else value
+    if action == 'inventory-detail':
+        target = payload.get('id')
+        if not isinstance(target, str): raise ValueError('Select a Skill ID')
+        item = next((i for i in m.cached_inventory().get('items', []) if i['id'] == target), None)
+        if item is None: raise ValueError('Skill not found; refresh the list')
+        return {'item':item}
     if action == 'install-roots': return m.install_roots()
     if action == 'install-identify': return m.identify_install(payload['url'],payload['target_root'])
     if action == 'history':
@@ -1874,7 +2194,9 @@ def dispatch(m, payload):
         return m.plan(op,row,source_row=m.select(payload['source']) if op in ('sync','share') else None,allow_changes=bool(payload.get('allow_local_changes')))
     row = m.select(payload.get('target',''))
     if action == 'inspect-space': return m.inspect_space(row)
-    if action == 'check': return m.check(row)
+    if action == 'check':
+        m._targeted_checks = True
+        return m.check(row)
     if action == 'backup': return m.backup(row)
     if action in ('protect','unprotect'): return m.protect(row,action=='protect')
     if action == 'source-bind': return m.bind_source(row,payload['url'],payload.get('ref',''),payload.get('path',''))

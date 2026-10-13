@@ -23,25 +23,29 @@ def directory_date(path):
     return None
 
 
-def installer_record(path):
+def installer_record(path, cache=None):
     """Only exact children of a lock file's skills directory; never match names globally."""
     folder = Path(path).resolve()
     lock = folder.parent.parent / '.skill-lock.json'
     if folder.parent.name != 'skills':
         return None
-    try:
-        if lock.stat().st_size > 4_000_000:
-            return None
-        record = json.loads(lock.read_text(encoding='utf-8')).get('skills', {}).get(folder.name)
-        return record if isinstance(record, dict) else None
-    except (OSError, ValueError, AttributeError):
-        return None
+    key = str(lock)
+    if cache is not None and key in cache:
+        records = cache[key]
+    else:
+        try:
+            records = json.loads(lock.read_text(encoding='utf-8')).get('skills', {}) if lock.stat().st_size <= 4_000_000 else {}
+        except (OSError, ValueError, AttributeError):
+            records = {}
+        if cache is not None: cache[key] = records
+    record = records.get(folder.name) if isinstance(records, dict) else None
+    return record if isinstance(record, dict) else None
 
 
-def installation(path, installed_at=None, first_seen=None):
+def installation(path, installed_at=None, first_seen=None, installer_cache=None):
     if installed_at:
         return {'at': installed_at, 'basis': 'installed'}
-    record = installer_record(path) or {}
+    record = installer_record(path, installer_cache) or {}
     value = record.get('installedAt')
     try:
         at = dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
@@ -53,7 +57,7 @@ def installation(path, installed_at=None, first_seen=None):
     return {'at': value or first_seen, 'basis': 'directory-created' if value else 'first-recorded'}
 
 
-def repository(legacy, url, ref='', path='', evidence='file-link'):
+def repository(legacy, url, ref='', path='', evidence='file-link', registry=None):
     if not isinstance(url, str):
         return None
     # Git's standard SSH origin is normalized without executing network commands.
@@ -62,7 +66,7 @@ def repository(legacy, url, ref='', path='', evidence='file-link'):
     if parsed.scheme != 'https' or parsed.username or parsed.password or parsed.query or parsed.fragment:
         return None
     from update_providers import source as registered_source
-    registered = registered_source(legacy, url, ref, path, evidence)
+    registered = registered_source(legacy, url, ref, path, evidence, registry=registry)
     if registered:
         if Path(path).is_absolute() or '..' in Path(path).parts or '\\' in path:
             return None
@@ -83,12 +87,12 @@ def repository(legacy, url, ref='', path='', evidence='file-link'):
     return {'provider': provider, 'url': canonical, 'ref': ref or info.get('ref') or '', 'path': subpath, 'evidence': evidence}
 
 
-def locked_source(legacy, path):
-    record = installer_record(path) or {}
-    return repository(legacy, record.get('sourceUrl', ''), path=record.get('skillPath', ''), evidence='installer-lock')
+def locked_source(legacy, path, registry=None, installer_cache=None):
+    record = installer_record(path, installer_cache) or {}
+    return repository(legacy, record.get('sourceUrl', ''), path=record.get('skillPath', ''), evidence='installer-lock', registry=registry)
 
 
-def file_candidates(legacy, path):
+def file_candidates(legacy, path, registry=None):
     folder = Path(path).resolve()
     result, seen = [], set()
     for name in ('SKILL.md', 'README.md', '.skill.json', 'metadata.json'):
@@ -100,7 +104,7 @@ def file_candidates(legacy, path):
         except (OSError, UnicodeError):
             continue
         for url in re.findall(r'https://(?:github\.com|gitlab\.com|gitee\.com|gitcode\.com)/[^\s<>"\x27`)\]}]+', text):
-            src = repository(legacy, url.rstrip('.,;:'))
+            src = repository(legacy, url.rstrip('.,;:'), registry=registry)
             if src and src['url'] not in seen:
                 seen.add(src['url'])
                 result.append({'source': src, 'evidence': 'file-link', 'from_path': str(p)})

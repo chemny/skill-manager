@@ -24,17 +24,28 @@
 
 ## 请求动作
 
+发现目录不修改本机 Skills。ClawHub 目录/搜索和 SkillsMP 搜索每来源最多 30 项；趋势/新品缓存 6 小时，搜索缓存 24 小时，GitHub 原文件核对缓存 6 小时。读取列表不携带完整文件预览。成功任务可能含来源错误，必须查看 `providers[].error` 或 `discovery-verify.error`，不能仅凭任务 succeeded 宣称来源全部正常。安装 URL 固定到已核对提交，仍需显式调用现有安装流程；ClawHub 原生托管安装尚未接入。
+
+接口文档：[ClawHub](https://docs.openclaw.ai/clawhub/http-api)、[SkillsMP](https://skillsmp.com/docs/api)、[GitHub Contents](https://docs.github.com/en/rest/repos/contents)。默认匿名，服务进程可选读取 `SKILLSMP_API_KEY` / `GITHUB_TOKEN`；不暴露到浏览器、不写入缓存。远端重定向只能同 HTTPS 主机。
+
 | action | 主要参数 | 结果 / 用途 |
 |---|---|---|
 | inventory | ids（可选）、lightweight（可选） | items、shared_targets、space、last_scan、insights、cache；lightweight=true 仅同步基础文件状态和数据库元数据，复用目录体积及上次更新检查，不遍历文件树；无缓存时首次建立完整快照 |
 | inventory-cached | 无 | 上次完整快照；cache.available=false 时没有可用快照，后台任务运行时仍允许直接读取 |
+| inventory-detail | id（清单 ID） | 只读返回该项完整快照，包括来源候选和比较详情；不扫描文件或初始化写库 |
+| discovery-cached | view=trending/new/search、query（search 必填） | 只读 items、providers；provider 状态含 fresh/error/needs_refresh/retry_at；不初始化写库、不请求远端 |
+| discovery-refresh | 同上，通过 job-start 调用 | ClawHub 正式目录/搜索、SkillsMP 正式关键词搜索；有效缓存不重抓，失败保留旧结果并返回错误状态，限流遵守来源级冷却 |
+| discovery-verify | id（已缓存候选）、github_url（可选来源前提），通过 job-start 调用 | 明确 GitHub 路径的固定提交及 SKILL.md blob/元数据核对；返回 verification 或 error；不执行安装或来源绑定 |
 | inspect-space | target | 第一层 entries 的分类、占用和 checked_at；不跟随软链接，不删除 |
+| cache-inspect | 无 | 只读检查管理器已登记、闲置超过 24 小时的暂存；返回 count、size、fingerprint；blocked 时不可清理 |
+| cache-clean | fingerprint、confirmed=true | 锁内复核后仅删除上述暂存，返回 completed、failures、removed_size、staged_space；部分失败为 partial，不刷新全部 Skills |
+| uninstall-references | ids（Skills ID，最多 1000 项） | 按需只读返回每个目标的完整已知引用（包括已移除的 Agent）、protected 与 read_only；不重建清单 |
 | install-roots | 无 | 启用的可编辑实际 Skill 根；排除共享根别名、插件、commands/agents |
 | install-identify | url（HTTPS）、target_root | 私有暂存中的候选、名称、版本、描述、路径、大小；返回 selection ID |
 | preview | operation=install、id（selection ID）、remote_path（候选原路径） | 固定安装内容的持久预览；仅新增、不覆盖 |
 | scan | project（可选）、import_logs | 逐目录扫描结果，默认不导入日志 |
 | check | target（ID/完整路径） | source_unknown/latest/update_available/local_modified 等 |
-| check-many | ids（明确选择的 ID 数组） | checks、skipped、failed；同一目标且来源相同只检查一次 |
+| check-many | ids（明确选择的 ID 数组）、scope（可选：partial/all/failed） | checks、skipped、failed；同一目标且来源相同只检查一次；failed 仅检查 last_check 失败或 attempt_failed 的对象 |
 | preview | operation、target；sync 另传 source | 固定内容和指纹的预览，不执行 |
 | preview | operation=restore/purge、id（备份 ID） | 恢复或永久清理预览 |
 | apply | id（预览 ID）、confirmed=true | 操作状态、记录 ID、对应备份；实际执行 |
@@ -74,8 +85,14 @@
 - `insights` 包含去重的来源覆盖、共享目标、独立同来源副本及空间核对目录。副本按名称及 provider/URL/子路径归组，ref 可不同，集合仓库的安装元数据可能缺子目录，未证明同一个远端 Skill 或内容相等；空间估算不等于可回收空间。
 - `cache.generated_at` 是读取时间，`from_cache=true` 表示历史快照，`dirty=true` 表示生成后存在管理器内变更。外部编辑不被监视，即使 dirty=false 也不代表实时。缓存跨服务重启保存，任务队列不保存。
 - 页面先 `inventory-cached` 显示列表。每项 `synced_at` 记录基础同步时间，15 分钟内切换页面不重复同步；过期时后台轻量同步当前范围。手动刷新绕过时间限制，但不重算全部文件指纹或目录体积。只有首次无缓存才建立完整清单，扫描及受影响项目的操作后刷新保留完整读取路径。
+- 网页在 `inventory-cached`、`job-start`、`job-status` 顶层传 `summary:true`。清单摘要保留全部引用身份、Agent、来源、保护、判断结果和可搜索简介；省略来源候选、逐文件差异等详情。点开详情或来源编辑时用 `inventory-detail` 补齐；摘要不能作为写入授权。未传该参数的调用方仍获得完整兼容响应，写操作结果不会删去恢复证据。客户端声明接受 gzip 时，大于 64 KB 的 JSON 响应压缩传输。
 - 有数据时刷新仅在按钮内显示加载图标，不遮挡列表；同范围、同读取模式的并发刷新合并为一个任务。局部同步不延长其他条目的缓存时间。备份列表保留一小时缓存。
-- 更新页仅保留“检查更新”，范围始终为全部已安装 Skills。成功比较结果缓存 15 分钟，命中不延长有效期；本地内容、来源或基线变化时失效。普通失败下次点击重试，服务端明确限流时遵守冷却时间。相同内容的重试失败保留此前已确认的比较结果，并单独记录失败尝试，不抹除“有更新”。
+- 移除 Agent 修补历史快照及展示引用，不清空整个 payload；`cache.recheck_ids` 标记受影响的剩余引用，网页轻量核对后清除对应 ID。不延长无关行同步时间，不清除既有 dirty 标记。登记记录保留，写入仍重新读取全部消费者及保护。
+- 更新页主命令为“检查更新”，范围始终为全部已安装 Skills；存在失败记录时另提供“重试失败项”。成功比较结果缓存 15 分钟，命中不延长有效期；本地内容、来源或基线变化时失效。普通失败下次点击重试，服务端明确限流时遵守冷却时间。相同内容的重试失败保留此前已确认的比较结果，并单独记录失败尝试，不抹除“有更新”。
+- 来源解析、安装锁和本地 Git 元数据只在单次检查内复用；不同引用的明确绑定和来源冲突仍独立核对。`run.prepared_at` 记录准备完成时间；检查前先报告未知总量，准备完成再给出进度。GitHub REST 限流或暂时断连时，可通过同一确认仓库的 HTTPS Git 查询准确提交，再从官方归档域名下载；不猜测其他分支或同名项目，不关闭 TLS，不放宽文件校验、大小或解压限制。`api_retry_at` 单独保留 REST 冷却，`rate_limit_scope=github-archive` 的下载限流不能靠 Git 元数据查询绕过。重复仓库连接失败仅在本轮复用，下轮可以重试。
+- 重试失败但已有“有更新”的证据时继续显示“有更新”；其他旧比较结果不冒充本轮成功，列表显示“查询失败”，详情保留错误及此前比较记录。404、包校验不一致和过大归档分别报告来源缺失、`remote_integrity` 和 `remote_archive_limit`，不自动替换来源或写入本地 Skill。
+- `attempt_failed` 保留 `source_issue`、错误和 `attempted_at`，不改写原成功结果的 `checked_at`。持久化只发布最终结果，不先写原始失败再恢复旧证据；比较缓存被清理时，仅在 `comparison_key` 与当前路径、来源、本地指纹、基线及版本规则完全匹配时复用 last_check。来源修复表单允许编辑已有失败绑定；候选不自动绑定。
+- HTTP 读取在原请求预算内分配重试时间；永久 DNS、证书、404、校验错误及 429 不立即重试。没有可用冷却头的限流默认等待 60 秒。`rate_limit_scope=github-git` 不可用针对性 Git 检查绕过。固定提交的目录缺失证据按仓库、路径及候选名称在进程中复用最多 15 分钟，仍返回 `remote_source_path`；新的检查先解析 ref，提交变化重新读取目录，网络失败不缓存为目录缺失。
 - `update_check`、体积和来源线索是上次完整检查记录；轻量同步不核验嵌套内容，不据此保证文件未修改。快照不能作为执行授权或绕过写操作前的重新校验。外部新增 Skills 通过扫描发现，添加目录统一在设置中进行。
 
 
@@ -108,7 +125,7 @@ Historical discoveries now appear directly in `backups` with `external: true`, n
 
 | action | 参数 | 用途 |
 |---|---|---|
-| `directory-preview` | `path` | 发现指定目录中的 Skills，返回数量、条目和指纹 |
+| `directory-preview` | `path` | 发现集合目录中的 Skills，返回数量、条目和指纹；单个 Skill 根提示选择上一级，不自动扩大范围 |
 | `directory-add` | `path`, `fingerprint`, `confirmed:true` | 复核预览后就地登记并扫描，不复制或关联 Agent |
 | `install-local-identify` | `path`, `target_root` | 暂存本地目录或 ZIP，网页后续自动执行；兼容调用方可显式预览及 apply |
 | `create-snapshot` | `scope:all/agent/selected`, `agent` 或 `ids` | 创建去重的完整内容备份包 |
@@ -139,7 +156,9 @@ Historical discoveries now appear directly in `backups` with `external: true`, n
 
 归组更新展开为各个可更新的实际目录并逐位置备份，已是最新或受保护位置不写入；部分失败返回具体安装路径，不显示全组成功。多选备份、标签和查询也展开为实际位置，同一真实目录仅处理一次。
 
-卸载按所选入口计算受影响 Agent；只有一个时直接执行，多个时仅选择一次目录。单个链接只移除入口，真实共享目录必须提示全部已知影响。网页 `execute(operation=delete)` 和 `execute-library-many(operation=delete)` 传 `expected_references`：键为目标清单 ID，值为精确的 `{id,platform,path}` 引用数组。执行前及内部暂存后均与当前 `affected` 结果核对，任何变化拒绝写入并要求重新选择；旧 CLI/API 调用方可不传，不绕过已有保护和指纹校验。取消选择不生成暂存或待确认项目。
+卸载先用 `uninstall-references` 按需读取全部引用，再计算受影响 Agent；只有一个进入通用确认，多个先选目录再确认一次。单个链接只移除入口，真实共享目录提示全部已知影响。网页 `execute(operation=delete)` 和 `execute-library-many(operation=delete)` 传 `expected_references`：键为目标 ID，值为精确 `{id,platform,path}` 数组（不含 protected/read_only 扩展字段）。执行前及暂存后与 `affected` 核对，变化拒绝写入；旧调用方可不传，但不能绕过保护和指纹校验。取消选择不生成暂存或待确认项目。
+
+`cache-clean` 也属于删除命令，在网页提交前使用同一个通用确认框。仅清理 `ASM_HOME/plans` 中已登记的 preview/selection/applied/discarded 闲置暂存；失败、运行中、中断引用、未知目录、链接或特殊文件均保留。不得把此接口用于 Agent 缓存、备份、回收站、已安装 Skills 或 `.asm-hold-*`。检查指纹过时拒绝执行，不能换成直接删目录。检查不会初始化写库；清理只修补暂存空间计数并记录历史，不使整个 Skills 清单失效。
 
 `reference_type=shared-root` 仍不允许直接写入。网页在当前 Agent 只有该别名入口时，可从同一 `real_path` 的已登记引用中找到可写真实目录，显示完整共享影响并要求选择该目录；即使只登记了一个 Agent，也不能静默从别名转为删除真实文件。没有已登记可写真实目录或相关引用受保护时不提供此操作。不可跳到同名的另一个实际目录，也不移动或重建 Agent 根目录链接。
 
@@ -156,3 +175,8 @@ Historical discoveries now appear directly in `backups` with `external: true`, n
 回收站隐藏备份专属筛选。变更筛选清除该列表的批量选择，分页基于筛选后的完整集合计算。
 清理建议复用缓存；选择建议筛选后，对搜索和类型范围内尚无建议的备份分批读取本地分析，
 最多两个并行批次、每批八项，不将当前页误当成全量结果。无匹配时保留筛选入口。
+
+`backup-advice` 的单项分析失败返回 `cleanup_advice:null` 和已脱敏 `error`，不是已完成的 `review`。
+网页只缓存成功结论；失败显示横线及错误提示，30 秒后重试，连续失败指数退避至最多 5 分钟。
+离开备份/回收站或页面不可见时不自动重试。完整响应缺项也进入退避，不循环立即请求。
+批量恢复忽略已知不可恢复项并提示数量和原因、保留跳过选择；可恢复项仍经过 `restore-targets` 和写入前校验。

@@ -13,6 +13,9 @@ def entry(m, bid):
 
 
 def validate(m, bid, action, meta):
+    from recovery import ensure_storage_safe
+    path, _ = m.backup_record(bid)
+    ensure_storage_safe(m, path)
     recycled = entry(m, bid)
     if action == 'trash-backup' and (recycled or meta.get('type') == 'quarantine'):
         raise ValueError('此内容已在回收站，请刷新列表')

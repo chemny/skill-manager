@@ -35,31 +35,103 @@ def candidates(m):
     return [{**json.loads(r['payload']),'state':r['state']} for r in rows]
 
 
-def locations(m, extra=None):
+def locations(m, extra=None, errors=None):
+    from backup_discovery import backup_name
     home=Path.home()
     values=[home/'.agents/skill-backups',home/'.agents/skills/.trash',home/'.agents/skills/_backups',home/'.agents/skills/.backups',home/'.agents/skills/.install-backups',m.home/'backups']
     for _,root,_ in m.roots():
         values.extend(root/n for n in ('.trash','_backups','.backups','.install-backups','.cmm-skill-backups','.frontmatter-fix-backups','.route-governor-backups'))
+        # Only immediate children and adjacent backup locations, never a home-wide walk.
+        for parent in (root, root.parent):
+            try:
+                if parent.is_dir():
+                    values.extend(p for p in parent.iterdir() if backup_name(p.name) and not p.is_symlink() and p.is_dir())
+            except OSError:
+                if errors is not None:errors.append({'path':str(parent),'message':'无法读取候选目录范围'})
     if extra:
         p=core.absolute(extra)
         if not p.is_dir() or p.is_symlink(): raise ValueError('Choose an existing directory, not a symbolic link')
         values.append(p)
-    return list(dict.fromkeys(p.resolve() for p in values if p.is_dir()))
+    return list(dict.fromkeys(p.absolute() for p in values if p.is_dir() and not p.is_symlink()))
+
+
+def ensure_storage_safe(m, path, ownership=None):
+    """Recovery storage must never be a live Skill or an Agent component."""
+    from component_ownership import Ownership
+    path = core.absolute(path)
+    if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
+        raise ValueError('Historical storage has a symlink ancestor')
+    policy = ownership or Ownership()
+    if policy.classify(path)['read_only']:
+        raise ValueError('Historical storage belongs to a protected Agent component')
+    real = path.resolve()
+    roots = m.roots()
+    for _, root, _ in roots:
+        resolved = root.resolve()
+        if real == resolved or real in resolved.parents:
+            raise ValueError('Historical storage contains a configured Skills root')
+    historical = {'.trash', '_backups', '.backups', '.install-backups',
+                  '.cmm-skill-backups', '.frontmatter-fix-backups', '.route-governor-backups'}
+    rows = m.db.execute("select c.path,c.platform,coalesce(i.protected,0) as protected from capabilities c left join maintenance_items i on c.id=i.id where c.kind='skill'")
+    for row in rows:
+        current = Path(row['path'])
+        if not core.exists(current):
+            continue
+        if not row['protected']:
+            matching = [root for platform,root,_ in roots if platform == row['platform'] and root in current.parents]
+            parts = current.relative_to(max(matching, key=lambda root:len(root.parts))).parts[:-1] if matching else current.parts[:-1]
+            if any(part in historical for part in parts):
+                continue
+        current = current.resolve()
+        if real == current or real in current.parents or current in real.parents:
+            raise ValueError('Historical storage overlaps an installed or protected Skill')
 
 
 def discover(m, extra=None):
+    import time
+    from backup_discovery import inspect_archive, partial_name
+    from component_ownership import Ownership
+    ownership = Ownership()
     known={Path(r['path']).resolve() for r in m.db.execute('select path from maintenance_backups')}
-    found,errors=[],[]
+    found,errors,unscanned=[],[],[]
+    visited=set()
+    rejected=[]
+    last_progress = [0.0]
+    def progress(force=False):
+        now = time.monotonic()
+        if hasattr(m, 'batch_progress') and (force or now-last_progress[0] >= .25):
+            m.batch_progress(len(visited), None, f'已检查 {len(visited)} 个位置 · 发现 {len(found)} 项备份')
+            last_progress[0] = now
+    progress(True)
     def visit(p, depth, area):
-        if p.is_symlink() or p.resolve() in known: return
-        if depth>5: return
-        if len(found)>=1000: return
+        if p.is_symlink() or any(a.is_symlink() for a in p.parents) or p.resolve() in known: return
+        if depth>5 or len(found)>=1000 or len(visited)>=20000:
+            unscanned.append({'path':str(p),'reason':'深度上限' if depth>5 else '数量上限'})
+            return
+        if p in visited:return
+        visited.add(p)
+        progress()
         try:
             skill=p.is_dir() and (p/'SKILL.md').is_file() and not (p/'SKILL.md').is_symlink()
             archive=p.is_file() and any(p.name.lower().endswith(s) for s in ('.zip','.tar','.tar.gz','.tgz'))
-            if skill or archive:
+            partial=p.is_file() and partial_name(p.name)
+            if skill or archive or partial:
+                try:
+                    ensure_storage_safe(m, p, ownership)
+                except ValueError as exc:
+                    errors.append({'path':str(p),'message':str(exc)})
+                    return
+                if archive:
+                    try:
+                        if not inspect_archive(p):
+                            rejected.append({'path':str(p),'reason':'压缩包内未找到 SKILL.md'})
+                            return
+                    except Exception as exc:
+                        errors.append({'path':str(p),'message':'压缩包未收录：'+str(exc)})
+                        return
                 bid='historical-'+hashlib.sha256(str(p).encode()).hexdigest()[:20]
                 entry={'id':bid,'path':str(p),'name':p.name,'suggested_type':'quarantine' if area.name=='.trash' else 'backup','format':'directory' if skill else 'archive','discovered_at':core.stamp(),'size':core.size(p),'basis':'在删除暂存目录发现；原位置需要确认' if area.name=='.trash' else '在备份目录发现；原位置需要确认'}
+                if partial:entry.update(format='partial',restorable=False,basis='部分备份，不支持整项恢复')
                 if skill:
                     checked=core.manifest(p)
                     entry['fingerprint']=core.fingerprint(checked)
@@ -72,12 +144,20 @@ def discover(m, extra=None):
                     visit(child,depth+1,area)
         except (OSError,ValueError): errors.append({'path':str(p),'message':'无法读取，未收录'})
     with m.lock():
-        roots=locations(m,extra)
+        roots=locations(m,extra,errors)
         for root in roots: visit(root,0,root)
         for entry in found:
             m.db.execute("insert into maintenance_recovery_candidates values (?,?,'pending') on conflict(id) do update set payload=excluded.payload",(entry['id'],json.dumps(entry,ensure_ascii=False)))
         m.db.commit()
-    return {'candidates':candidates(m),'locations':[str(p) for p in roots],'errors':errors,'limit':1000,'checked_at':core.stamp()}
+    progress(True)
+    saved=candidates(m)
+    states={c['id']:c['state'] for c in saved}
+    recycled={r['id'] for r in m.db.execute('select id from maintenance_backup_trash')}
+    summary={'found':len(found),'in_trash':sum(e['id'] in recycled for e in found),
+             'ignored':sum(states[e['id']]=='ignored' for e in found),
+             'partial':sum(e['format']=='partial' for e in found)}
+    return {'candidates':saved,'locations':[str(p) for p in roots],'errors':errors,'limit':1000,'checked_at':core.stamp(),
+            'summary':summary,'rejected':rejected,'unscanned':unscanned,'complete':not errors and not unscanned}
 
 
 def ignore(m, cid):
@@ -121,6 +201,7 @@ def import_candidate(m, cid, original, kind, confirmed=False):
 
 
 def preview_purge(m, ids, operation='purge'):
+    if hasattr(m,'batch_progress'):m.batch_progress(0,None,'正在核对待处理项目')
     if operation not in ('purge','trash-backup','restore-backup'):raise ValueError('Unsupported backup operation')
     if not isinstance(ids,list) or not 1<=len(ids)<=10000 or any(not isinstance(i,str) for i in ids):raise ValueError('Select 1 to 10000 backups')
     plans=[]
@@ -141,9 +222,11 @@ def apply_purge(m, ids, confirmed=False):
         if p.get('action') not in ('purge','trash-backup','restore-backup') or p.get('state')!='preview' or p.get('expired'):raise ValueError('Only backup management plans can be batched')
         if p['action']!='restore-backup' and flags(m).get(p['backup_id']):raise ValueError('Backup marked to retain; cancel that mark before deleting')
     results=[]
+    if hasattr(m,'batch_progress'):m.batch_progress(0,len(ids),'正在处理')
     for pid in ids:
         try:results.append(m.apply(pid))
         except (ValueError,OSError) as exc:return {'state':'partial','completed':len(results),'total':len(ids),'error':core.redact(str(exc)),'results':results,'remaining':ids[len(results):]}
+        if hasattr(m,'batch_progress'):m.batch_progress(len(results),len(ids),'正在处理')
     return {'state':'succeeded','completed':len(results),'total':len(ids),'results':results}
 
 
@@ -167,6 +250,8 @@ def historical_rows(m, ids=None):
         available=p.exists() and not p.is_symlink()
         supported=c['format']=='directory' and available and (p/'SKILL.md').is_file() and c.get('restorable',True)
         result.append({'id':c['id'],'name':c['name'],'type':c['suggested_type'],'state':'available' if available else 'missing','external':True,'original_path':None,'path':str(p),'historical_path':str(p),'reason':'historical','created_at':None,'discovered_at':c['discovered_at'],'size':c['size'] if available else {'allocated_bytes':0,'bytes':0},'retained':retained.get(c['id'],False),'restore_status':'needs_target' if supported else 'unsupported','status_detail':'恢复时选择安装位置；文件将在预览时重新校验' if supported else '压缩包或文件不可用，暂不支持恢复','format':c['format'],'affected_references':[],'verified':None,'target_exists':False})
+    for row in result:
+        if row['format']=='partial':row['status_detail']='部分备份，不支持整项恢复'
     return result
 
 
@@ -181,9 +266,10 @@ def stored_space(m):
             amount = {'bytes':logical, 'allocated_bytes':logical}
         key = 'quarantine' if row['trashed_at'] or meta.get('type')=='quarantine' else 'backups'
         for field in ('bytes', 'allocated_bytes'): totals[key][field] += amount.get(field, 0)
+    recycled = {r['id'] for r in m.db.execute('select id from maintenance_backup_trash')}
     for candidate in candidates(m):
         if candidate['state'] != 'pending': continue
-        key = 'quarantine' if candidate.get('suggested_type')=='quarantine' else 'backups'
+        key = 'quarantine' if candidate.get('suggested_type')=='quarantine' or candidate['id'] in recycled else 'backups'
         for field in ('bytes', 'allocated_bytes'): totals[key][field] += candidate.get('size', {}).get(field, 0)
     return totals
 
@@ -236,28 +322,65 @@ def enrich_backup(m, row):
 
 
 def backup_advice(m, ids):
+    from update_checks import path_lock
+    # Coalesce overlapping batches across request-local Manager instances.
+    with path_lock('backup-advice:'+str(m.home)):
+        return _backup_advice(m, ids)
+
+
+def _backup_advice(m, ids):
     """Bounded local analysis for visible rows; no cloud queries or file changes."""
-    from backup_policy import advice
     if not isinstance(ids,list) or not 1<=len(ids)<=8 or any(not isinstance(b,str) or not b for b in ids):
         raise ValueError('Select 1 to 8 backup IDs')
     rows={b['id']:b for b in m.backups(verify=False)['backups']}
+    from backup_advice_cache import Cache
+    cache=Cache(m)
+    try:
+        return _cached_backup_advice(m, ids, rows, cache)
+    finally:
+        if hasattr(m, '_advice_rows'):del m._advice_rows
+        cache.close()
+
+
+def _cached_backup_advice(m, ids, rows, cache):
+    from backup_policy import advice
+    from backup_advice_cache import signature, context
+    ctx=context(m)
+    pending=[]
+    hits=0
     m._advice_rows=list(rows.values())
     result=[]
     for bid in dict.fromkeys(ids):
         row=rows.get(bid)
         try:
             if row is None:raise ValueError('Backup not found')
+            try:key=signature(m,row,list(rows.values()),ctx)
+            except (OSError,ValueError):key=None
+            saved=cache.get(bid,key) if key else None
+            if saved is not None:
+                hits+=1
+                result.append({'id':bid,'cleanup_advice':saved})
+                continue
             if row.get('retained'):decision=advice('keep','已标记防止误删')
             elif row['state']!='available':decision=advice('review','备份文件不可用，暂不建议删除')
             elif row.get('bundle'):decision=advice('review','整体备份需逐项核实，暂不建议删除')
             elif row.get('type')=='quarantine':decision=advice('review','回收内容仍可恢复，请确认不再需要后再删除')
             else:
                 decision=backup_detail(m,bid,row)['cleanup_advice']
-        except (ValueError,OSError,KeyError,TypeError):
-            decision=advice('review','分析未完成或文件已变化，暂不建议删除')
+        except (ValueError,OSError,KeyError,TypeError) as exc:
+            result.append({'id':bid,'cleanup_advice':None,'error':core.redact(str(exc)) or '分析未完成或文件已变化'})
+            continue
+        if key:pending.append((bid,key,decision,row))
         result.append({'id':bid,'cleanup_advice':decision})
-    del m._advice_rows
-    return {'items':result,'checked_at':core.stamp()}
+    if pending:
+        after=context(m)
+        fresh_rows=m.backups(verify=False)['backups']
+        fresh_by_id={r['id']:r for r in fresh_rows}
+        for bid,key,decision,row in pending:
+            try:
+                if bid in fresh_by_id and key==signature(m,fresh_by_id[bid],fresh_rows,after):cache.put(bid,key,decision)
+            except (OSError,ValueError):pass
+    return {'items':result,'checked_at':core.stamp(),'cache':{'hits':hits,'computed':len(result)-hits}}
 
 
 def backup_detail(m, bid, row=None):
@@ -272,6 +395,8 @@ def backup_detail(m, bid, row=None):
         data=read_package(package_path(m,bid))
         return {**row,'snapshot':data,'valid':True,'comparison_state':'bundle','comparisons':[],'checked_at':core.stamp(),'cleanup_advice':advice('review','整体备份需逐项核实，不能仅凭日期清理')}
     source=container if meta.get('external') else container/'content'
+    if row.get('format')=='partial':
+        return {**row,'comparison_state':'unsupported','comparisons':[],'files':[],'note':'部分备份，不支持整项恢复。','cleanup_advice':advice('review','部分备份需自行核实')}
     if row.get('format')=='archive':
         return {**row,'comparison_state':'unsupported','comparisons':[],'files':[],'note':'压缩包未解压，不能自动比较或恢复。','cleanup_advice':advice('review','压缩包内容未经核实，暂不建议删除')}
     before=core.manifest(source)

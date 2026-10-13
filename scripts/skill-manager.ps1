@@ -89,3 +89,4 @@ switch ($Action) {
 }
 
 & $Python.Command @($Python.Args + @($PythonScript) + $ArgsList)
+exit $LASTEXITCODE

@@ -20,7 +20,9 @@ class AgentManagementTests(unittest.TestCase):
         self.a.update_source('remove-agent', 'codex', '')
         self.assertEqual((self.roots/'a/SKILL.md').read_bytes(), before)
         self.assertEqual({r['id'] for r in self.m.r.all_capabilities()}, ids)
-        self.assertFalse(self.m.cached_inventory()['cache']['available'])
+        cached = self.m.cached_inventory()
+        self.assertTrue(cached['cache']['available'])
+        self.assertFalse(any(i['platform']=='codex' for i in cached['items']))
         roots, _ = locations(self.a.load_config())
         self.assertFalse(any(r['platform']=='codex' for r in roots))
         items = self.m.inventory()['items']

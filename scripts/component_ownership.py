@@ -64,6 +64,9 @@ class Ownership:
         path = Path(value).expanduser().absolute()
         # Removing an individual link does not mutate its component target.
         if path.is_symlink():
+            location = self.classify(path.parent)
+            if location['read_only']:
+                return location
             return self.result('user', False, reason='仅卸载此链接，保留目标文件')
         resolved = path.resolve()
         system = (self.codex / 'skills/.system').resolve()

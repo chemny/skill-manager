@@ -86,6 +86,7 @@ def items_for(m,scope,ids=None,agent=None):
     return grouped
 
 def write_package(m,dest,grouped,scope):
+    if hasattr(m,'batch_progress'):m.batch_progress(0,len(grouped),'正在打包备份')
     data={'format':FORMAT,'created_at':c.stamp(),'scope':scope,'items':[]}
     with zipfile.ZipFile(dest,'w',zipfile.ZIP_DEFLATED) as z:
         for n,(raw,entry) in enumerate(grouped.items()):
@@ -99,7 +100,9 @@ def write_package(m,dest,grouped,scope):
             for rel,v in files.items():
                 if v['kind']=='file':z.write(root/rel,'skills/'+key+'/'+rel)
             if c.manifest(root)!=files:raise ValueError('备份时源文件发生变化：'+row['name'])
+            if hasattr(m,'batch_progress'):m.batch_progress(n+1,len(grouped),'正在打包备份')
         z.writestr('snapshot.json',json.dumps(data,ensure_ascii=False))
+    if hasattr(m,'batch_progress'):m.batch_progress(len(grouped),len(grouped),'正在校验备份包')
     read_package(dest)
     return data
 
@@ -179,6 +182,7 @@ def restore_targets(m,p):
 
 
 def preview_restore(m,p):
+    if hasattr(m,'batch_progress'):m.batch_progress(0,None,'正在核对恢复位置')
     plans=[];destinations=set();entries=p.get('entries')
     if not isinstance(entries,list) or not 1<=len(entries)<=10000:raise ValueError('请选择要恢复的内容')
     root=p.get('target_root')
@@ -216,9 +220,11 @@ def apply_restore(m,ids,confirmed):
         if p.get('action')!='restore' or p.get('state')!='preview' or p.get('expired'):raise ValueError('恢复预览已失效')
         if c.fingerprint(c.manifest(Path(p['target'])))!=p['before']:raise ValueError('目标已变化，请重新预览')
     results=[]
+    if hasattr(m,'batch_progress'):m.batch_progress(0,len(ids),'正在恢复')
     for pid in ids:
         try:results.append(m.apply(pid))
         except (OSError,ValueError) as exc:return {'state':'partial','completed':len(results),'total':len(ids),'results':results,'error':c.redact(str(exc)),'remaining':ids[len(results):]}
+        if hasattr(m,'batch_progress'):m.batch_progress(len(results),len(ids),'正在恢复')
     return {'state':'succeeded','completed':len(results),'total':len(ids),'results':results}
 
 def dispatch(m,p):

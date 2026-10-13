@@ -52,7 +52,9 @@ class RecoveryTests(unittest.TestCase):
         self.assertFalse([b for b in self.m.backups()['backups'] if not b.get('external')])
 
     def test_archives_only_listed_ignored_candidates_stay_ignored(self):
-        p,c=self.historical();archive=p.parent/'old.zip';archive.write_bytes(b'not extracted')
+        import zipfile
+        p,c=self.historical();archive=p.parent/'old.zip'
+        with zipfile.ZipFile(archive,'w') as z:z.writestr('old/SKILL.md','name: old')
         with patch.object(recovery,'locations',return_value=[p.parent]):result=recovery.discover(self.m)
         a=next(i for i in result['candidates'] if i['format']=='archive')
         with self.assertRaisesRegex(ValueError,'Archive'):recovery.import_candidate(self.m,a['id'],str(self.roots/'restored'),'backup',True)
@@ -156,7 +158,9 @@ class RecoveryTests(unittest.TestCase):
         self.assertFalse(d['valid']);self.assertEqual(d['comparison_state'],'unavailable')
 
     def test_archive_detail_does_not_extract(self):
-        source,c=self.historical();p=source.parent/'skill-20200102.zip';p.write_bytes(b'not a zip')
+        import zipfile
+        source,c=self.historical();p=source.parent/'skill-20200102.zip'
+        with zipfile.ZipFile(p,'w') as z:z.writestr('old/SKILL.md','old')
         with patch.object(recovery,'locations',return_value=[source.parent]):v=recovery.discover(self.m)
         a=next(i for i in v['candidates'] if i['format']=='archive')
         d=recovery.backup_detail(self.m,a['id'])

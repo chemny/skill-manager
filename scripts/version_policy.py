@@ -1,6 +1,6 @@
 """New-version visibility is independent of permission to replace local changes."""
 import re
-POLICY_VERSION = 3
+POLICY_VERSION = 4
 
 
 def version(value):

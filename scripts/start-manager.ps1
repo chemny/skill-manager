@@ -9,3 +9,4 @@ $Manager = Join-Path $ScriptRoot "skill-manager.ps1"
 
 Write-Host "Starting Agent Skill Manager at http://$HostName`:$Port/"
 & powershell -ExecutionPolicy Bypass -File $Manager -Action Web -HostName $HostName -Port $Port -Open
+exit $LASTEXITCODE

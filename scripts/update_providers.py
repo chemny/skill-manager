@@ -10,6 +10,10 @@ from pathlib import Path
 from urllib.parse import quote, urlencode, urlparse
 
 
+class IntegrityError(ValueError):
+    pass
+
+
 def public_url(value):
     value = str(value or '').strip().rstrip('/')
     p = urlparse(value)
@@ -35,18 +39,22 @@ def request(channel, suffix, limit=4_000_000):
     if os.environ.get(env):
         headers['X-API-Key'] = os.environ[env]
     opener = urllib.request.build_opener(PublicRedirect())
-    with opener.open(urllib.request.Request(channel['base_url'] + suffix, headers=headers), timeout=20) as response:
-        body = response.read(limit + 1)
-    if len(body) > limit:
-        raise ValueError('更新源响应超过大小限制')
-    return body
+    from network_io import read
+    return read(urllib.request.Request(channel['base_url'] + suffix, headers=headers), limit=limit,
+                opener=opener.open)
 
 
 def api_json(channel, suffix):
     return json.loads(request(channel, suffix))
 
 
-def channels(legacy):
+def channels(legacy, registry=None):
+    if registry is not None:
+        if hasattr(registry, '_batch_update_channels'):
+            if registry._batch_update_channels is None:
+                registry._batch_update_channels = registry.update_channels()
+            return registry._batch_update_channels
+        return registry.update_channels()
     registry = legacy.Registry()
     try:
         return registry.update_channels()
@@ -54,19 +62,43 @@ def channels(legacy):
         registry.conn.close()
 
 
-def service(legacy, name):
-    channel = next((c for c in channels(legacy) if c['name'] == name), None)
+def service(legacy, name, registry=None):
+    channel = next((c for c in channels(legacy, registry) if c['name'] == name), None)
     if not channel or not channel['enabled']:
         raise ValueError('更新源不存在或未启用')
     return channel
 
 
-def source(legacy, url, ref='', path='', evidence='user-confirmed'):
+def identity(src):
+    if not src:
+        return None
+    return tuple(str(src.get(key) or '') for key in ('provider', 'channel', 'url', 'slug', 'ref', 'path'))
+
+
+def validate_source(legacy, src, registry=None):
+    if not src.get('channel'):
+        raise ValueError('来源绑定缺少渠道信息，请重新绑定来源')
+    channel = service(legacy, src['channel'], registry)
+    if channel['kind'] != src['provider']:
+        raise ValueError('更新源类型已变化，请重新绑定来源')
+    url = public_url(src['url'])
+    base = public_url(channel['base_url'])
+    if src['provider'] == 'git':
+        matches = url.removesuffix('.git') == base.removesuffix('.git')
+    else:
+        slug = src.get('slug', '')
+        matches = bool(re.fullmatch(r'[A-Za-z0-9_.-]+', slug)) and url == base + '/api/v1/skills/' + slug
+    if not matches:
+        raise ValueError('更新源地址已变化，请重新绑定来源')
+    return channel
+
+
+def source(legacy, url, ref='', path='', evidence='user-confirmed', registry=None):
     try:
         clean = public_url(url)
     except ValueError:
         return None
-    for channel in channels(legacy):
+    for channel in channels(legacy, registry):
         base = channel['base_url'].rstrip('/')
         if channel['kind'] == 'skillhub':
             prefix = base + '/api/v1/skills/'
@@ -108,7 +140,7 @@ def search(legacy, name, channel_name=None):
 
 
 def download(legacy, src, folder):
-    channel = service(legacy, src['channel'])
+    channel = validate_source(legacy, src)
     folder = folder / 'provider-download'
     folder.mkdir()
     if src['provider'] == 'skillhub':
@@ -139,7 +171,12 @@ def download(legacy, src, folder):
                 raise ValueError('安装包元信息与请求的 Skill 版本不一致')
             actual.pop('_meta.json')
         if not expected or actual != expected:
-            raise ValueError('安装包文件与更新源校验清单不一致')
+            missing = sorted(set(expected)-set(actual))
+            extra = sorted(set(actual)-set(expected))
+            changed = sorted(p for p in set(expected)&set(actual) if expected[p]!=actual[p])
+            detail = '; '.join(label+': '+', '.join(paths[:6]) for label,paths in
+                               [('missing',missing),('extra',extra),('changed',changed)] if paths)
+            raise IntegrityError('安装包文件与更新源校验清单不一致; '+detail)
         legacy.record_channel_event(channel['name'], 'download', 'success', slug)
         return skill, {**src, 'resolved_ref':version, 'commit':hashlib.sha256(archive).hexdigest()}
     if src['provider'] == 'git':

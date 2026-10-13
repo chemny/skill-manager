@@ -158,7 +158,8 @@ class VersionPolicyTests(unittest.TestCase):
         for ids in (None,[],['x']*9,[None]):
             with self.assertRaises(ValueError):recovery.backup_advice(self.m,ids)
         result=recovery.backup_advice(self.m,['not-found'])
-        self.assertEqual(result['items'][0]['cleanup_advice']['code'],'review')
+        self.assertIsNone(result['items'][0]['cleanup_advice'])
+        self.assertIn('not found',result['items'][0]['error'])
 
     def test_retained_and_local_modifications_stay(self):
         old,recent=self.setup_history();recovery.retain(self.m,old,True)

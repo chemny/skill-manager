@@ -10,6 +10,8 @@ ACTIONS={'directory-preview','directory-add','install-local-identify'}
 def preview(m, raw):
     root=c.absolute(raw)
     if not root.is_dir():raise ValueError('目录不存在或不可读取')
+    if (root/'SKILL.md').is_file():
+        raise ValueError('当前选择的是单个 Skill，请选择它的上一级 Skills 目录；未修改扫描范围')
     found=[];errors=[]
     def visit(p,depth):
         if depth>9:return

@@ -94,7 +94,7 @@ def assess(m, row, meta, before, comparisons, valid):
     except (KeyError,ValueError,TypeError):recent=False
     now=core.manifest(current)
     baseline=json.loads(state['baseline']) if state and state['baseline'] else None
-    if (not recent or check.get('status')!='latest' or check.get('local_fingerprint')!=core.fingerprint(now)
+    if (not recent or check.get('status')!='latest' or check.get('local_fingerprint')!=core.comparison_fingerprint(now)
             or baseline is None or any(core.diff(baseline,now).values()) or m.source(item,dict(state))!=meta['source']):
         return advice('review','当前版本、来源或本地修改尚未核实；请先检查更新，保留备份',summary='当前版本尚未核实')
     saved_version=version(row.get('skill_info',{}).get('version'))

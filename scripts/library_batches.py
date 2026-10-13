@@ -15,7 +15,7 @@ def preview(m,operation,targets):
     plans=[];skipped=[];seen=set()
     try:
         for index,row in enumerate(rows):
-            if hasattr(m,'batch_progress'):m.batch_progress(index,len(rows),'预览：'+row['name'])
+            if hasattr(m,'batch_progress'):m.batch_progress(0,None,'正在核对所选项目')
             path=Path(row['path']);key=str(path.absolute()) if operation=='delete' else str(path.resolve())
             if key in seen:
                 skipped.append({'id':row['id'],'name':row['name'],'reason':'同一操作目标已包含在本次预览中'});continue
@@ -30,7 +30,7 @@ def preview(m,operation,targets):
                     state=m.state(row)
                     check=json.loads(state['last_check']) if state['last_check'] else {}
                     if check.get('status') not in ('update_available','local_modified','baseline_unknown','local_ahead'):raise ValueError('尚未检测到可更新内容，请先检查更新')
-                    if check.get('local_fingerprint') and check['local_fingerprint']!=c.fingerprint(c.manifest(path.resolve())):raise ValueError('本地内容已变化，请重新检查更新')
+                    if check.get('local_fingerprint') and check['local_fingerprint']!=c.comparison_fingerprint(c.manifest(path.resolve())):raise ValueError('本地内容已变化，请重新检查更新')
                 if any(path!=Path(p['target']) and (path in Path(p['target']).parents or Path(p['target']) in path.parents) for p in plans):raise ValueError('与本次其他目标存在父子目录关系，请分开操作')
                 plans.append(m.plan(operation,row))
             except (ValueError,OSError) as exc:
@@ -62,6 +62,7 @@ def apply(m,plans,operation,confirmed):
         if hasattr(m,'batch_progress'):m.batch_progress(index,len(plan_ids),'执行：'+m.get_plan(pid)['item']['name'])
         try:results.append(m.apply(pid))
         except (OSError,ValueError) as exc:return {'state':'partial','action':operation,'completed':len(results),'total':len(plan_ids),'results':results,'remaining':plan_ids[len(results):],'error':c.redact(str(exc))}
+        if hasattr(m,'batch_progress'):m.batch_progress(len(results),len(plan_ids),'正在处理')
     return {'state':'succeeded','action':operation,'completed':len(results),'total':len(plan_ids),'results':results}
 
 def dispatch(m,p):

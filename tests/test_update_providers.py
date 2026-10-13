@@ -27,8 +27,8 @@ class UpdateProviderTests(unittest.TestCase):
     def test_custom_channels_validation_and_builtin_protection(self):
         for url in ('http://example.com', 'https://secret@example.com', 'https://example.com?token=secret'):
             with self.assertRaises(ValueError):
-                self.a.Registry().update_channel('add', {'name':'bad', 'kind':'skillhub', 'base_url':url})
-        registry = self.a.Registry()
+                self.m.r.update_channel('add', {'name':'bad', 'kind':'skillhub', 'base_url':url})
+        registry = self.m.r
         registry.update_channel('add', {'name':'team', 'label':'Team', 'kind':'skillhub', 'base_url':'https://example.com'})
         source = providers.source(self.a, 'https://example.com/api/v1/skills/a')
         self.assertEqual(source['channel'], 'team')
@@ -49,7 +49,8 @@ class UpdateProviderTests(unittest.TestCase):
         self.m.bind_source(self.row('a'), url)
         with patch.object(providers, 'request', side_effect=reply):
             checked = self.m.check(self.row('a'))
-            self.assertEqual(checked['status'], 'baseline_unknown')
+            self.assertEqual(checked['status'], 'update_available')
+            self.assertEqual(checked['remote_version'], '2.0')
             self.assertEqual(checked['update_decision'], 'review')
             plan = self.m.plan('update', self.row('a'), allow_changes=True)
             self.m.apply(plan['id'])

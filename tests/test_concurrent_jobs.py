@@ -1,5 +1,6 @@
 """Queries and refresh remain independent; aliases and overlapping writes conflict."""
 import json
+import sqlite3
 import threading
 import time
 import unittest
@@ -16,6 +17,33 @@ class ConcurrentJobsTests(unittest.TestCase):
     tearDown=fixtures.MaintenanceTests.tearDown
     skill=fixtures.MaintenanceTests.skill
     row=fixtures.MaintenanceTests.row
+
+    def test_scope_connections_close_on_success_and_failure(self):
+        connect = sqlite3.connect
+        for fail in (False, True):
+            connections = []
+            class TrackedConnection(sqlite3.Connection):
+                def execute(self, sql, *args, **kwargs):
+                    if fail and sql.startswith('select path'):
+                        raise sqlite3.OperationalError('injected read failure')
+                    return super().execute(sql, *args, **kwargs)
+            def tracked(*args, **kwargs):
+                db = connect(*args, **kwargs, factory=TrackedConnection)
+                connections.append(db)
+                return db
+            with patch.object(task_scopes.sqlite3, 'connect', tracked):
+                try:
+                    if fail:
+                        with self.assertRaises(sqlite3.OperationalError):
+                            task_scopes.describe(self.a, {'action':'check', 'target':'a'})
+                    else:
+                        task_scopes.describe(self.a, {'action':'check', 'target':'a'})
+                    self.assertEqual(len(connections), 1)
+                    with self.assertRaises(sqlite3.ProgrammingError):
+                        connections[0].execute('select 1')
+                finally:
+                    for db in connections:
+                        db.close()
 
     def finish(self,jobs):
         deadline=time.monotonic()+5

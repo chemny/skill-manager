@@ -5,9 +5,7 @@ queue, while plans/backups/operation history remain in the maintenance database.
 """
 import copy
 import threading
-import tempfile
 import contextlib
-from pathlib import Path
 import maintenance
 import task_scopes
 
@@ -19,7 +17,7 @@ class BusyError(ValueError):
 class Jobs:
     TAXONOMY_ACTIONS = {'taxonomy', 'taxonomy-update','classification-preview','classification-apply','classification-undo','source-search-policy','source-search-policy-update','discover-sources-batch'}
     ACTIONS = __import__('library_batches').ACTIONS | __import__('snapshots').ACTIONS | __import__('library_actions').ACTIONS | {'discover-backups','retain-backup','ignore-backup-candidate','import-backup','preview-purge-many','apply-purge-many','probe-source','set-labels','import-usage','discover-sources','duplicate-review','inventory', 'scan', 'check', 'check-many', 'preview', 'apply',
-               'execute','execute-library-many','execute-backups','execute-restore-many','empty-trash',
+               'discovery-refresh','discovery-verify','translate-descriptions','cache-clean','execute','execute-library-many','execute-backups','execute-restore-many','empty-trash',
                'update-now', 'backup', 'backups', 'backup-detail', 'verify-backup', 'protect',
                'unprotect', 'source-bind', 'history', 'plans', 'get-plan',
                'discard-plan', 'usage', 'recover', 'inspect-space', 'install-roots', 'install-identify', 'set-description','open-folder'}
@@ -74,10 +72,10 @@ class Jobs:
             registry = self.legacy.Registry()
             try:
                 removed = {k for k,v in self.legacy.load_config()['platforms'].items() if v.get('removed')}
-                request['ids'] = [r['id'] for r in registry.all_capabilities() if r['kind']=='skill' and r['platform'] not in removed and r['health']!='not-scanned' and maintenance.absolute(r['path']).exists()]
+                request['ids'] = [r['id'] for r in registry.conn.execute("select id,kind,platform,health,path from capabilities where kind='skill'") if r['platform'] not in removed and r['health']!='not-scanned' and maintenance.absolute(r['path']).exists()]
             finally:
                 registry.conn.close()
-        if request.get('action') in ('execute','execute-library-many','execute-backups','execute-restore-many','empty-trash','update-now','apply', 'recover','import-backup','apply-purge-many','directory-add','apply-restore-many','apply-library-many') and request.get('confirmed') is not True:
+        if request.get('action') in ('cache-clean','execute','execute-library-many','execute-backups','execute-restore-many','empty-trash','update-now','apply', 'recover','import-backup','apply-purge-many','directory-add','apply-restore-many','apply-library-many') and request.get('confirmed') is not True:
             raise ValueError('Confirmation required')
         if request.get('action') == 'check-many' and (not isinstance(request.get('ids'), list) or
                 not request['ids'] or len(request['ids']) > 10000 or
@@ -88,7 +86,7 @@ class Jobs:
             raise ValueError('Invalid inventory scope')
         scope = task_scopes.describe(self.legacy,request)
         ui_scope=request.get('ui_scope')
-        if ui_scope is not None and (not isinstance(ui_scope,dict) or ui_scope.get('view') not in ('skills','updates','backups','trash','settings','sources','suggestions','install','plans') or not isinstance(ui_scope.get('key'),str) or len(ui_scope['key'])>12000):
+        if ui_scope is not None and (not isinstance(ui_scope,dict) or ui_scope.get('view') not in ('home','discovery','skills','updates','backups','trash','settings','sources','suggestions','install','plans') or not isinstance(ui_scope.get('key'),str) or len(ui_scope['key'])>12000):
             raise ValueError('Invalid view scope')
         with self.lock:
             inventory_key = (None if request.get('ids') is None else tuple(sorted(set(request['ids']))), bool(request.get('lightweight'))) if request['action']=='inventory' else None
@@ -127,7 +125,6 @@ class Jobs:
 
     def run(self, jid, request):
         m = None
-        archives = None
         final_state = 'failed'
         slot = None
         try:
@@ -158,64 +155,19 @@ class Jobs:
                 result=m.import_usage(int(request.get('days',90)),bool(request.get('replay')),request.get('roots'),
                     progress=lambda completed,total,message:self.update(jid,completed=completed,total=total,message=message))
             elif request['action'] == 'check-many':
-                archives=tempfile.TemporaryDirectory(prefix='asm-check-repos-')
-                m._repository_archive_home=Path(archives.name)
-                rows, seen, skipped = [], set(), []
-                selected = [m.select(x) for x in dict.fromkeys(request['ids'])]
-                # Prefer the real directory if the selected set also contains an alias.
-                selected.sort(key=lambda r: (not bool(m.source(r)), str(maintenance.absolute(r['path'])) != str(maintenance.absolute(r['path']).resolve())))
-                identities = {}
-                for row in selected:
-                    path = str(maintenance.absolute(row['path']).resolve())
-                    source = m.source(row) or {}
-                    identities.setdefault(path,set())
-                    if source:
-                        identities[path].add(tuple(source.get(k) or '' for k in ('provider','url','ref','path')))
-                for row in selected:
-                    path = str(maintenance.absolute(row['path']).resolve())
-                    if path in seen:
-                        continue
-                    seen.add(path)
-                    if len(identities[path]) > 1:
-                        skipped.append({'id':row['id'], 'reason':'共享引用的更新来源不一致，需先核对'})
-                        continue
-                    if row['kind'] != 'skill' or not maintenance.absolute(row['path']).exists():
-                        skipped.append({'id':row['id'], 'reason':'本地 Skill 不存在'})
-                        continue
-                    source = m.source(row)
-                    if not source or source.get('provider') not in ('github','git','skillhub'):
-                        skipped.append({'id':row['id'], 'reason':'缺少可靠的更新来源' if not source else '更新来源暂不支持内容对比'})
-                        continue
-                    rows.append(row)
-                results = []
-                run = {'id':jid, 'scope':request.get('scope','partial'), 'started_at':maintenance.stamp(), 'state':'running', 'total':len(rows)+len(skipped), 'completed':len(skipped), 'failed':0, 'cached':0, 'remote':0, 'skipped':len(skipped)}
-                save_check(run)
-                self.update(jid, total=run['total'], completed=run['completed'], check_run=run, message='开始检查更新')
-                limited = set()
-                for row in rows:
-                    provider = m.source(row).get('provider')
-                    if provider in limited:
-                        skipped.append({'id':row['id'],'reason':'该来源请求限流，稍后重试'})
-                        run.update(completed=run['completed']+1, skipped=len(skipped))
-                        save_check(run)
-                        self.update(jid, completed=run['completed'], check_run=run)
-                        continue
-                    self.update(jid, message='检查：' + row['name'])
-                    checked = m.check(row)
-                    checked['name'] = row['name']
-                    results.append(checked)
-                    run.update(completed=len(results)+len(skipped), failed=sum(x['status']=='check_failed' or bool(x.get('attempt_failed')) for x in results), cached=sum(bool(x.get('cache_hit')) for x in results), remote=sum(bool(x.get('remote_requested',True)) for x in results))
+                from check_batches import run as check_batch
+                last_publish = [0.0]
+                def progress(run, results):
+                    import time
+                    now = time.monotonic()
+                    if len(results) > 1 and run['completed'] != run['total'] and now - last_publish[0] < .1:
+                        return
+                    last_publish[0] = now
                     save_check(run)
-                    self.update(jid, completed=run['completed'], partial_checks=results, check_run=run)
-                    if checked.get('code')=='remote_rate_limit':
-                        limited.add(provider)
-                run.update(state='partial' if limited or run['failed'] else 'succeeded',finished_at=maintenance.stamp())
-                save_check(run)
-                result = {'run':run, 'checks':results, 'skipped':skipped,
-                          'failed':sum(x['status'] == 'check_failed' or bool(x.get('attempt_failed')) for x in results),
-                          'note':'Checks compare confirmed refs, never bind guessed sources or update files.'}
-                m.db.execute('insert or replace into maintenance_check_runs values (?,?)', (jid,__import__('json').dumps(result)))
-                m.db.commit()
+                    self.update(jid, total=run['total'], completed=run['completed'],
+                                partial_checks=results, check_run=run, message='检查更新')
+                result = check_batch(m, request['ids'], force=bool(request.get('force')),
+                                     progress=progress, run_id=jid, scope=request.get('scope','partial'))
             else:
                 m.batch_progress=lambda completed,total,message:self.update(jid,completed=completed,total=total,message=message)
                 result = maintenance.dispatch(m, request)
@@ -228,7 +180,6 @@ class Jobs:
         finally:
             try:
                 if m: m.db.close()
-                if archives: archives.cleanup()
             finally:
                 with self.lock:
                     self.records[jid]['state'] = final_state

@@ -4,25 +4,27 @@ English | [中文](./README.zh.md)
 
 ## Overview
 
-Agent Skill Manager brings locally installed Skills into one workspace. It is for people who use several Agents and want to find their Skills, check for updates, install new ones, and recover removed content.
+Agent Skill Manager brings locally installed Skills into one workspace. It is for people who want to understand what is installed across Agents, maintain it safely, and find new Skills without hunting through separate catalogs.
 
 The local Web UI is the main entry point. An Agent can also use the Python CLI. Both share a SQLite registry and the same maintenance logic; running the manager does not require a model API.
 
 ## Preview
 
-![Skill inventory with example data in the local management UI](assets/skill-manager-preview.png)
+![Home page with sample data showing installed Skills, rankings and the Skill store](assets/skill-manager-preview.png)
 
 ## Features
 
 | Capability | What you can do |
 | --- | --- |
 | Unified inventory | Browse grouped Skills and see their Agent associations, installation time, size, category and update status. Independent installation directories remain separate on disk. |
+| Home and discovery | See installed Skills, Agent coverage, available updates and disk use at a glance. Browse a Skill store with rankings, categories and search. The home page shows recent verified Skills; a daily recommendation board appears only when at least five eligible items are available. |
 | Update checks | Check all eligible installed Skills against their recorded sources. Successful results are reused for 15 minutes; failed requests can be retried, subject to provider rate limits. |
 | Installation | Install from supported public repository URLs, HTTPS ZIP links, a local folder or a local ZIP, then choose the Agent and installation location. |
 | Agent directories | Add supported Agent presets with OS-specific default paths, or register custom directories in Settings. |
 | Backup and recovery | Create and restore backups, move deleted backups and uninstalled Skills to the recycle bin, and permanently delete recycle-bin entries after confirmation. |
 | Categories and tags | Organize Skills with a basic category and tags, and filter or sort the list directly. |
 | Local history | Inspect failed or interrupted operations and export diagnostic records when troubleshooting. |
+| Cache cleanup | Inspect and remove the manager's expired temporary files without touching installed Skills or backups. |
 
 ## Installation
 
@@ -37,6 +39,7 @@ Use an Agent that supports local Skills and local command execution. Codex and C
 | Git and network | Needed for Git-backed source checks and updates; public providers may impose request limits. |
 | File picker | macOS uses its system picker; other platforms use Python Tkinter when available. Local paths can also be entered manually. |
 | Operating system | Tested on macOS. Windows paths and adapters have been reviewed and have simulated tests, but Windows has not been tested on a real machine. Automatic shared-link creation is not supported on Windows. |
+| Optional translation | English summaries on the home page can be translated locally with Ollama and the `qwen3.5:4b` model (override with `SKILL_MANAGER_TRANSLATION_MODEL`). Without it, the manager remains usable and does not send descriptions to a translation service. |
 
 ### Quick Installation
 
@@ -55,7 +58,7 @@ The Agent should report the installed location and whether the command-line entr
 Use skill-manager to scan my installed Skills and open the management page.
 ```
 
-The page opens on your computer. Start with **All**, then choose an Agent or filter the list. **Refresh** synchronizes the inventory; **Scan** discovers changes in configured directories.
+The page opens on your computer. The home page summarizes your installation and links to recent Skills. Open **All** to manage an Agent's Skills, or **Discover** to browse catalogs. **Refresh** checks already registered items; **Scan** discovers changes in configured directories.
 
 ## Usage Examples
 
@@ -91,18 +94,26 @@ Add OpenCode to the manager and show its installed Skills.
 
 Presets supply platform-appropriate default directories. Removing an Agent's management configuration does not delete its Skill files. Shared directories may be used by multiple Agents; uninstalling shared content affects those users of the directory.
 
+### Discover a Skill
+
+```text
+Show me recently added Skills for writing and documents.
+```
+
+The store provides rankings, categories and search using public catalog data. Opening a listing shows its source; a catalog result is not automatically trusted as an update source for an installed Skill. Daily recommendations verify that a repository contains a usable `SKILL.md` and have a freshness rule; if fewer than five qualify, the home page shows new arrivals instead.
+
 ## How It Works
 
-The manager scans configured directories and records installed items, source evidence, update results and operation history in SQLite. The browser reuses inventory data for 15 minutes and backup-list data for one hour. Writes refresh affected records.
+The manager scans configured directories and records installed items, source evidence, update results and operation history in SQLite. The browser reuses inventory data for 15 minutes and backup-list data for one hour. Discovery results and translated summaries are cached locally; remote catalog and GitHub requests are rate-limited and can fail independently. Writes refresh affected records.
 
 | Component | Responsibility |
 | --- | --- |
 | `SKILL.md` | Instructions for an Agent using the manager. |
 | `scripts/agent_skill_manager.py` and `bin/asm` | Python CLI, local Web server and macOS/POSIX command wrapper. Windows can invoke the Python script directly. |
-| `assets/maintenance.html` | Inventory, updates, installation, backups, recycle bin and settings UI. |
+| `assets/maintenance.html` | Home, inventory, discovery, updates, installation, backups, recycle bin and settings UI. |
 | Maintenance modules in `scripts/` | Source checks, ownership rules, file validation, backups, task execution and recovery. |
 
-The service binds to the local loopback interface and uses a local request token. Data stays in `~/.agent-skill-manager` by default; `ASM_HOME` selects an isolated data directory. Source searches and update checks contact the configured providers. Diagnostics may contain local paths, so review exported reports before sharing.
+The service binds to the local loopback interface and uses a local request token. Data stays in `~/.agent-skill-manager` by default; `ASM_HOME` selects an isolated data directory. Discovery, source searches and update checks contact public providers. The local translation option calls Ollama on loopback. Diagnostics may contain local paths, so review exported reports before sharing.
 
 Built-in status uses ownership evidence rather than treating an entire Agent directory as protected. Cleanup advice is advisory: an old version or a same-name copy alone does not prove that content can be safely deleted.
 
@@ -113,14 +124,14 @@ SKILL.md                         Agent instructions
 scripts/                         CLI, server and maintenance modules
 bin/asm                          POSIX command wrapper
 assets/maintenance.html          Management UI
-assets/skill-manager-preview.png Example-data screenshot
+assets/skill-manager-preview.png Home-page screenshot with sample data
 references/                      Usage, API and attribution documents
 tests/                           Isolated automated tests
 README.md / README.zh.md         English and Chinese introductions
 LICENSE                          Project license
 ```
 
-See [maintenance commands](references/maintenance.md), the [Web API](references/web-api.md), [Agent icon sources](references/agent-icons.md), and the [Chinese purpose catalog](references/purpose-zh.json). Development changes are recorded in [CHANGELOG.md](CHANGELOG.md).
+See [maintenance commands](references/maintenance.md), the [Web API](references/web-api.md), [browser regression tests](references/browser-tests.md), [Agent icon sources](references/agent-icons.md), and the [Chinese purpose catalog](references/purpose-zh.json). Development changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

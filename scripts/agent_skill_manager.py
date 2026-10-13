@@ -20,7 +20,6 @@ import os
 import re
 import signal
 import shutil
-import ssl
 import sqlite3
 import subprocess
 import sys
@@ -153,16 +152,19 @@ def short(text: Optional[str], limit: int = 80) -> str:
 def ensure_app_dirs() -> None:
     for path in (APP_DIR, REPORT_DIR, BACKUP_DIR, LOG_DIR):
         path.mkdir(parents=True, exist_ok=True)
+    if CONFIG_PATH.is_symlink():
+        raise ValueError('配置文件为软链接，未覆盖原配置')
     if not CONFIG_PATH.exists():
-        CONFIG_PATH.write_text(json.dumps(DEFAULT_CONFIG, indent=2), encoding="utf-8")
+        try:
+            with CONFIG_PATH.open('x', encoding='utf-8') as output:
+                json.dump(DEFAULT_CONFIG, output, indent=2)
+        except FileExistsError:
+            pass
 
 
 def load_config() -> Dict[str, Any]:
     ensure_app_dirs()
-    try:
-        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        data = {}
+    data = read_config()
     merged = json.loads(json.dumps(DEFAULT_CONFIG))
     for key, value in data.items():
         if isinstance(value, dict) and isinstance(merged.get(key), dict):
@@ -170,7 +172,7 @@ def load_config() -> Dict[str, Any]:
         else:
             merged[key] = value
     # One-time path migration; subsequent user customization is respected.
-    if int(data.get("scan_schema", 1)) < 2:
+    if data.get("scan_schema", 1) < 2:
         settings = merged.get("platforms", {}).get("claude_code", {})
         roots = settings.get("roots", [])
         for root in ("~/.claude/skills", ".claude/skills"):
@@ -180,9 +182,44 @@ def load_config() -> Dict[str, Any]:
     return merged
 
 
+def validate_config(data):
+    if not isinstance(data, dict) or not isinstance(data.get('platforms', {}), dict):
+        raise ValueError('配置结构无效；原配置已保留，请修复 config.json 后重试')
+    if type(data.get('scan_schema', 1)) is not int:
+        raise ValueError('配置版本无效；原配置已保留，请修复 config.json 后重试')
+    for settings in data.get('platforms', {}).values():
+        if not isinstance(settings, dict) or not isinstance(settings.get('roots', []), list) or any(
+                not isinstance(root, str) or not root.strip() for root in settings.get('roots', [])):
+            raise ValueError('Agent 目录配置无效；原配置已保留，请修复 config.json 后重试')
+        if any(key in settings and type(settings[key]) is not bool for key in ('enabled','removed','added','agent','discover_defaults')):
+            raise ValueError('Agent 开关配置无效；原配置已保留，请修复 config.json 后重试')
+    if 'web' in data and not isinstance(data['web'], dict):
+        raise ValueError('后台配置无效；原配置已保留，请修复 config.json 后重试')
+
+
+def read_config():
+    try:
+        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise ValueError('配置无法读取或已损坏；原配置已保留，请修复 config.json 后重试') from error
+    validate_config(data)
+    return data
+
+
 def save_config(config: Dict[str, Any]) -> None:
     ensure_app_dirs()
-    CONFIG_PATH.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
+    read_config()
+    validate_config(config)
+    if CONFIG_PATH.is_symlink():
+        raise ValueError('配置文件为软链接，未覆盖原配置')
+    fd, temporary = tempfile.mkstemp(prefix='.config-', suffix='.tmp', dir=APP_DIR)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as output:
+            json.dump(config, output, indent=2, ensure_ascii=False)
+            output.flush(); os.fsync(output.fileno())
+        os.replace(temporary, CONFIG_PATH)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def expand_root(root: str) -> Path:
@@ -375,9 +412,19 @@ class Registry:
     def __init__(self, db_path: Path = DB_PATH) -> None:
         ensure_app_dirs()
         self.conn = sqlite3.connect(db_path, timeout=30)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("pragma busy_timeout=30000")
-        self.init_schema()
+        try:
+            self.conn.row_factory = sqlite3.Row
+            self.conn.execute("pragma busy_timeout=30000")
+            self.init_schema()
+        except BaseException:
+            self.conn.close()
+            raise
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.conn.close()
 
     def init_schema(self) -> None:
         self.conn.executescript(
@@ -1250,6 +1297,12 @@ class Registry:
         self.conn.commit()
 
 
+def registry_call(method, *args, **kwargs):
+    """Run a short registry operation without leaving its connection open."""
+    with Registry() as registry:
+        return getattr(registry, method)(*args, **kwargs)
+
+
 def discover_capabilities(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     caps: List[Dict[str, Any]] = []
     for platform, settings in config.get("platforms", {}).items():
@@ -1279,7 +1332,10 @@ def source_entries() -> List[Dict[str, Any]]:
     from skill_locations import locations
     config = load_config()
     registry = Registry()
-    rows = registry.all_capabilities()
+    try:
+        rows = registry.all_capabilities()
+    finally:
+        registry.conn.close()
     entries: List[Dict[str, Any]] = []
     descriptors, warnings = locations(config)
     for entry in descriptors:
@@ -1326,12 +1382,15 @@ def update_source(action: str, platform: str, root: str, enabled: Optional[bool]
     if action == 'remove-agent':
         registry = Registry()
         try:
-            if registry.conn.execute("select 1 from sqlite_master where name='maintenance_inventory_cache'").fetchone():
-                registry.conn.execute('update maintenance_inventory_cache set payload=null,generation=generation+1 where id=1')
-                registry.conn.commit()
+            from maintenance import prune_agent_cache
+            prune_agent_cache(registry, platform)
         finally:
             registry.conn.close()
-    Registry().log_operation(f"source-{action}", f"{platform}:{root}", {"platform": platform, "root": root, "enabled": settings.get("enabled", True)})
+    registry = Registry()
+    try:
+        registry.log_operation(f"source-{action}", f"{platform}:{root}", {"platform": platform, "root": root, "enabled": settings.get("enabled", True)})
+    finally:
+        registry.conn.close()
     return {"sources": source_entries(), "config_path": str(CONFIG_PATH)}
 
 
@@ -1978,7 +2037,7 @@ def smart_upgrade_check(progress: Optional[Any] = None, use_cache: bool = True, 
             progress("update", str(name), checked_updates, len(update_groups))
         update_results.append(summary)
         if job_id:
-            Registry().save_smart_upgrade_item(job_id, str(name), str(summary.get("status") or "checked"), summary, item)
+            registry_call('save_smart_upgrade_item', job_id, str(name), str(summary.get("status") or "checked"), summary, item)
         if item:
             items.append(item)
 
@@ -2068,7 +2127,7 @@ def update_smart_job(job_id: str, **updates: Any) -> None:
         job["updated_at"] = now_iso()
         if updates.get("status") in ("done", "error", "canceled"):
             job["finished_at"] = job["updated_at"]
-        Registry().save_background_job(job)
+        registry_call('save_background_job', job)
 
 
 def smart_job_cancel_requested(job_id: str) -> bool:
@@ -2076,7 +2135,7 @@ def smart_job_cancel_requested(job_id: str) -> bool:
         job = SMART_UPGRADE_JOBS.get(job_id)
         if job and job.get("cancel_requested"):
             return True
-    persisted = Registry().background_job(job_id) if job_id else None
+    persisted = registry_call('background_job', job_id) if job_id else None
     return bool(persisted and persisted.get("cancel_requested"))
 
 
@@ -2096,10 +2155,10 @@ def cancel_smart_upgrade_job(job_id: str) -> Dict[str, Any]:
                 job["current"] = ""
                 job["updated_at"] = now_iso()
                 job["finished_at"] = job["updated_at"]
-                Registry().save_background_job(job)
+                registry_call('save_background_job', job)
                 return dict(job)
             return dict(job)
-    persisted = Registry().background_job(job_id)
+    persisted = registry_call('background_job', job_id)
     if not persisted:
         raise ValueError("Smart upgrade job was not found.")
     if persisted.get("status") == "running":
@@ -2109,7 +2168,7 @@ def cancel_smart_upgrade_job(job_id: str) -> Dict[str, Any]:
         persisted["current"] = ""
         persisted["updated_at"] = now_iso()
         persisted["finished_at"] = persisted["updated_at"]
-        Registry().save_background_job(persisted)
+        registry_call('save_background_job', persisted)
     return persisted
 
 
@@ -2127,7 +2186,7 @@ def run_smart_upgrade_job(job_id: str, scope: Optional[Dict[str, Any]] = None) -
     except SmartUpgradeCanceled:
         update_smart_job(job_id, status="canceled", stage="canceled", current="", error="")
     except Exception as exc:
-        Registry().log_operation("smart-upgrade-error", job_id, {"error": str(exc)})
+        registry_call('log_operation', "smart-upgrade-error", job_id, {"error": str(exc)})
         update_smart_job(job_id, status="error", stage="error", current="", error=str(exc))
 
 
@@ -2187,9 +2246,9 @@ def smart_upgrade_job_status(job_id: str) -> Dict[str, Any]:
                     job["status"] = "error"
                     job["error"] = "The previous scan was interrupted. Start a new scan or retry the remaining items."
                     job["finished_at"] = now_iso()
-                    Registry().save_background_job(job)
+                    registry_call('save_background_job', job)
             return dict(job)
-    persisted = Registry().background_job(job_id)
+    persisted = registry_call('background_job', job_id)
     if not persisted:
         raise ValueError("Smart upgrade job was not found.")
     if persisted.get("status") == "running":
@@ -2198,12 +2257,12 @@ def smart_upgrade_job_status(job_id: str) -> Dict[str, Any]:
             persisted["status"] = "error"
             persisted["error"] = "The previous scan was interrupted. Start a new scan or retry the remaining items."
             persisted["finished_at"] = now_iso()
-            Registry().save_background_job(persisted)
+            registry_call('save_background_job', persisted)
     return persisted
 
 
 def latest_smart_upgrade_job() -> Optional[Dict[str, Any]]:
-    return Registry().latest_background_job("smart_upgrade")
+    return registry_call('latest_background_job', "smart_upgrade")
 
 
 def source_discovery_status(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
@@ -2414,7 +2473,6 @@ def print_table(rows: Sequence[Dict[str, Any]], columns: Sequence[Tuple[str, str
 
 
 def list_command(args: argparse.Namespace) -> None:
-    registry = Registry()
     where = []
     params: List[Any] = []
     if args.platform:
@@ -2423,7 +2481,8 @@ def list_command(args: argparse.Namespace) -> None:
     if args.status:
         where.append("status=?")
         params.append(args.status)
-    rows = [row_to_dict(row) for row in registry.all_capabilities(" and ".join(where), params)]
+    with Registry() as registry:
+        rows = [row_to_dict(row) for row in registry.all_capabilities(" and ".join(where), params)]
     for row in rows:
         row["description"] = short(row.get("description"), 55)
     print_table(
@@ -2634,21 +2693,18 @@ def github_json(uri: str) -> Any:
     if token:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(uri, headers=headers)
-    with urllib.request.urlopen(req, timeout=20) as response:
-        return json.loads(response.read().decode("utf-8"))
+    from network_io import read
+    # Large monorepo indexes are metadata, not downloadable Skill archives.
+    parsed = urllib.parse.urlparse(uri)
+    tree_index = parsed.hostname == 'api.github.com' and '/git/trees/' in parsed.path
+    return json.loads(read(req, limit=8_000_000 if tree_index else 4_000_000).decode("utf-8"))
 
 
 def gitlab_json(uri: str) -> Any:
     headers = {"User-Agent": APP_NAME, "Accept": "application/json"}
     req = urllib.request.Request(uri, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=20) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.URLError as exc:
-        if "CERTIFICATE_VERIFY_FAILED" not in str(exc):
-            raise
-        with urllib.request.urlopen(req, timeout=20, context=ssl._create_unverified_context()) as response:
-            return json.loads(response.read().decode("utf-8"))
+    from network_io import read
+    return json.loads(read(req).decode("utf-8"))
 
 
 def latest_github_hash(row: sqlite3.Row) -> Tuple[str, str]:
@@ -2717,50 +2773,65 @@ def version_gt(a: str, b: str) -> bool:
 
 def download_github_archive(info: Dict[str, str], branch: str, tmpdir: Path) -> Path:
     url = f"https://api.github.com/repos/{info['owner']}/{info['repo']}/zipball/{urllib.parse.quote(branch)}"
+    direct = f"https://codeload.github.com/{info['owner']}/{info['repo']}/zip/{urllib.parse.quote(branch, safe='')}"
     headers = {"User-Agent": APP_NAME}
     token = os.environ.get("GITHUB_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(url, headers=headers)
+    req = urllib.request.Request(direct if info.get('_direct_archive') else url,
+                                 headers={"User-Agent":APP_NAME} if info.get('_direct_archive') else headers)
     archive = tmpdir / "repo.zip"
-    with urllib.request.urlopen(req, timeout=60) as response:
-        archive.write_bytes(response.read())
+    from network_io import read
+    try:
+        read(req, timeout=60, limit=64_000_000, destination=archive)
+    except Exception as error:
+        from github_transport import can_fallback
+        if info.get('_direct_archive') or not can_fallback(error): raise
+        # Same pinned ref, official archive host, same byte/ZIP validation limits.
+        read(urllib.request.Request(direct, headers={"User-Agent":APP_NAME}),
+             timeout=30, attempts=2, limit=64_000_000, destination=archive)
     extract_dir = tmpdir / "repo"
     extract_dir.mkdir()
     with zipfile.ZipFile(archive) as zf:
-        safe_extract_zip(zf, extract_dir)
+        links = safe_extract_zip(zf, extract_dir, skip_symlinks=bool(info.get('_skip_unrelated_links')))
     roots = [path for path in extract_dir.iterdir() if path.is_dir()]
-    return roots[0] if roots else extract_dir
+    if len(roots) != 1:
+        raise ValueError('GitHub archive must contain one repository root')
+    (extract_dir / '.asm-archive-links.json').write_text(json.dumps(links), encoding='utf-8')
+    return roots[0]
 
 
-def safe_extract_zip(zf: zipfile.ZipFile, target_dir: Path) -> None:
+def safe_extract_zip(zf: zipfile.ZipFile, target_dir: Path, skip_symlinks=False):
     root = target_dir.resolve()
-    for member in zf.infolist():
-        if ((member.external_attr >> 16) & 0o170000) == 0o120000:
-            raise ValueError(f"Archive symlink requires manual review: {member.filename}")
+    entries = zf.infolist()
+    if len(entries) > 10000 or sum(m.file_size for m in entries) > 256_000_000:
+        raise ValueError('Archive exceeds expanded size or file count limit')
+    links, regular = [], []
+    for member in entries:
         destination = (target_dir / member.filename).resolve()
-        if destination != root and root not in destination.parents:
+        if (destination != root and root not in destination.parents) or '..' in member.filename.replace('\\','/').split('/'):
             raise ValueError(f"Unsafe archive path: {member.filename}")
-    zf.extractall(target_dir)
+        if ((member.external_attr >> 16) & 0o170000) == 0o120000:
+            if not skip_symlinks:
+                raise ValueError(f"Archive symlink requires manual review: {member.filename}")
+            links.append(member.filename)
+        else:
+            regular.append(member)
+    zf.extractall(target_dir, members=regular)
     # Git archive executable bits are part of the skill; never propagate setuid/setgid.
-    for member in zf.infolist():
+    for member in regular:
         mode = (member.external_attr >> 16) & 0o777
         if mode and member.create_system == 3:
             os.chmod(target_dir / member.filename, mode)
+    return links
 
 
 def download_zip_archive(url: str, tmpdir: Path) -> Path:
     headers = {"User-Agent": APP_NAME}
     req = urllib.request.Request(url, headers=headers)
     archive = tmpdir / "source.zip"
-    try:
-        with urllib.request.urlopen(req, timeout=60) as response:
-            archive.write_bytes(response.read())
-    except urllib.error.URLError as exc:
-        if "CERTIFICATE_VERIFY_FAILED" not in str(exc):
-            raise
-        with urllib.request.urlopen(req, timeout=60, context=ssl._create_unverified_context()) as response:
-            archive.write_bytes(response.read())
+    from network_io import read
+    read(req, timeout=60, limit=64_000_000, destination=archive)
     extract_dir = tmpdir / "source"
     extract_dir.mkdir()
     with zipfile.ZipFile(archive) as zf:
@@ -2942,7 +3013,7 @@ def gitcode_mirror_candidates(info: Dict[str, str]) -> List[Dict[str, str]]:
             prefixes.append(value)
     candidates: List[Dict[str, str]] = []
     channels = [
-        channel for channel in Registry().update_channels()
+        channel for channel in registry_call('update_channels', )
         if channel.get("enabled") and channel.get("kind") in ("mirror", "github-mirror")
     ]
     for channel in channels:
@@ -3111,7 +3182,7 @@ def install_source_from_url(url: str, tmpdir: Path) -> Tuple[Path, Dict[str, str
     registered = service_source(sys.modules[__name__], clean)
     if registered:
         if registered['provider'] == 'git':
-            channel = next(c for c in Registry().update_channels() if c['name'] == registered['channel'] and c['enabled'])
+            channel = next(c for c in registry_call('update_channels', ) if c['name'] == registered['channel'] and c['enabled'])
             root = clone_git_repository(channel['base_url'], tmpdir)
             registered['ref'] = current_git_branch(root)
         else:
@@ -3337,7 +3408,11 @@ def is_rate_limit_error(exc: BaseException) -> bool:
 
 
 def channel_enabled(name: str) -> bool:
-    return Registry().channel_enabled(name)
+    registry = Registry()
+    try:
+        return registry.channel_enabled(name)
+    finally:
+        registry.conn.close()
 
 
 def record_channel_event(channel: str, action: str, outcome: str, skill_name: str = "", message: str = "", started_at: Optional[float] = None) -> None:
@@ -3354,40 +3429,20 @@ def record_channel_event(channel: str, action: str, outcome: str, skill_name: st
 
 def ordered_channels(names: Sequence[str]) -> List[str]:
     registry = Registry()
-    enabled = [name for name in names if registry.channel_enabled(name)]
-    return sorted(enabled, key=lambda name: registry.channel_score(name), reverse=True)
+    try:
+        enabled = [name for name in names if registry.channel_enabled(name)]
+        return sorted(enabled, key=lambda name: registry.channel_score(name), reverse=True)
+    finally:
+        registry.conn.close()
 
 
 def read_http_text(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 20, retries: int = 2) -> str:
     request_headers = {"User-Agent": APP_NAME, "Accept": "application/json"}
     if headers:
         request_headers.update(headers)
-    last_error: Optional[BaseException] = None
-    for _attempt in range(retries + 1):
-        req = urllib.request.Request(url, headers=request_headers)
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as response:
-                return response.read().decode("utf-8", "ignore")
-        except http.client.IncompleteRead as exc:
-            last_error = exc
-            if exc.partial:
-                return exc.partial.decode("utf-8", "ignore")
-        except urllib.error.URLError as exc:
-            last_error = exc
-            if "CERTIFICATE_VERIFY_FAILED" not in str(exc):
-                continue
-            try:
-                with urllib.request.urlopen(req, timeout=timeout, context=ssl._create_unverified_context()) as response:
-                    return response.read().decode("utf-8", "ignore")
-            except http.client.IncompleteRead as inner:
-                last_error = inner
-                if inner.partial:
-                    return inner.partial.decode("utf-8", "ignore")
-            except urllib.error.URLError as inner:
-                last_error = inner
-    if last_error:
-        raise last_error
-    raise ValueError(f"Unable to read URL: {url}")
+    from network_io import read
+    req = urllib.request.Request(url, headers=request_headers)
+    return read(req, timeout=timeout, attempts=retries + 1).decode('utf-8')
 
 
 def discover_remote_with_skillsmp(skill_name: str) -> Optional[Dict[str, str]]:
@@ -4591,8 +4646,21 @@ def api_payload(handler: http.server.BaseHTTPRequestHandler) -> Dict[str, Any]:
 
 def json_response(handler: http.server.BaseHTTPRequestHandler, payload: Any, status: int = 200) -> None:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    compressed = False
+    for encoding in handler.headers.get('Accept-Encoding', '').split(','):
+        parts = [part.strip() for part in encoding.split(';')]
+        try: quality = next((float(p[2:]) for p in parts[1:] if p.startswith('q=')), 1)
+        except ValueError: quality = 0
+        if parts[0].lower() == 'gzip' and quality > 0 and len(data) >= 65536:
+            import gzip
+            data = gzip.compress(data, compresslevel=1)
+            compressed = True
+            break
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
+    handler.send_header('Cache-Control', 'no-store')
+    handler.send_header('Vary', 'Accept-Encoding')
+    if compressed: handler.send_header('Content-Encoding', 'gzip')
     handler.send_header("Content-Length", str(len(data)))
     handler.end_headers()
     try:
@@ -4616,12 +4684,21 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
             json_response(self, {"error": "foreign origin/host"}, 403)
             return False
         if write and not secrets.compare_digest(self.headers.get("X-ASM-Token", ""), self.server.api_token):
-            json_response(self, {"error": "missing local API token"}, 403)
+            json_response(self, {"error": "missing local API token", "code":"authorization_expired"}, 403)
             return False
         return True
 
     def do_GET(self) -> None:
         if not self.authorized():
+            return
+        if self.path == '/api/session':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Cache-Control', 'no-store')
+            data = json.dumps({'token':self.server.api_token}).encode('utf-8')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
             return
         if urllib.parse.urlparse(self.path).path == "/api/backup-file":
             if not self.authorized(write=True):return
@@ -4678,9 +4755,10 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(data)
             return
         if self.path.startswith("/api/state"):
-            registry = Registry()
-            raw_rows = registry.all_capabilities()
-            update_gates = update_gate_for_rows(registry, raw_rows)
+            with Registry() as registry:
+                raw_rows = registry.all_capabilities()
+                update_gates = update_gate_for_rows(registry, raw_rows)
+                smart_snapshot = registry.smart_upgrade_snapshot(fresh_only=True)
             latest_job = latest_smart_upgrade_job()
             rows = []
             for row in raw_rows:
@@ -4694,7 +4772,7 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
                     "config_path": str(CONFIG_PATH),
                     "db_path": str(DB_PATH),
                     "source_discovery": source_discovery_status(rows),
-                    "smart_upgrade": registry.smart_upgrade_snapshot(fresh_only=True),
+                    "smart_upgrade": smart_snapshot,
                     "smart_job": smart_upgrade_job_status(latest_job["id"]) if latest_job else None,
                 },
             )
@@ -4706,21 +4784,21 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
             if not cap_id:
                 json_response(self, {"error": "id is required"}, 400)
                 return
-            registry = Registry()
-            cap = registry.find_one(cap_id)
-            if not cap:
-                json_response(self, {"error": "capability not found"}, 404)
-                return
-            rows = registry.conn.execute(
-                """
-                select occurred_at, source, confidence, session_id, evidence
-                from usage_events
-                where capability_id=?
-                order by occurred_at desc
-                limit 50
-                """,
-                (cap["id"],),
-            ).fetchall()
+            with Registry() as registry:
+                cap = registry.find_one(cap_id)
+                if not cap:
+                    json_response(self, {"error": "capability not found"}, 404)
+                    return
+                rows = registry.conn.execute(
+                    """
+                    select occurred_at, source, confidence, session_id, evidence
+                    from usage_events
+                    where capability_id=?
+                    order by occurred_at desc
+                    limit 50
+                    """,
+                    (cap["id"],),
+                ).fetchall()
             json_response(self, {"capability": row_to_dict(cap), "events": [row_to_dict(row) for row in rows]})
             return
         json_response(self, {"error": "not found"}, 404)
@@ -4751,6 +4829,8 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
                         json_response(self, {"error":"A maintenance task is running; wait for its result", "code":"busy", "message":"另一个任务正在执行，请等待完成。"}, 409)
                         return
                     result = maintenance.api_dispatch(sys.modules[__name__], payload)
+                if payload.get('summary') and payload.get('action') in ('job-start','job-status'):
+                    result = maintenance.job_summary(result)
                 json_response(self, result)
                 return
             if self.path == "/api/scan":
@@ -4773,6 +4853,7 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
                         },
                     )
                 finally:
+                    if 'registry' in locals(): registry.conn.close()
                     SCAN_LOCK.release()
                 return
             if self.path == "/api/sources":
@@ -4791,11 +4872,11 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
                 json_response(self, {"ok":True, **result})
                 return
             if self.path == "/api/update-channels":
-                json_response(self, {"ok": True, "channels": Registry().update_channels()})
+                json_response(self, {"ok": True, "channels": registry_call('update_channels', )})
                 return
             if self.path == "/api/update-channel-update":
                 with self.server.maintenance_jobs.configure():
-                    result = Registry().update_channel(payload.get("action", ""), payload)
+                    result = registry_call('update_channel', payload.get("action", ""), payload)
                 json_response(self, {"ok": True, **result})
                 return
             if self.path == "/api/update-channel-test":
@@ -4859,26 +4940,26 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
                 json_response(self, {"ok": True, **cancel_smart_upgrade_job(payload.get("job_id", ""))})
                 return
             if self.path == "/api/logs":
-                rows = [row_to_dict(row) for row in Registry().operation_logs()]
+                rows = [row_to_dict(row) for row in registry_call('operation_logs', )]
                 json_response(self, {"ok": True, "logs": rows})
                 return
             if self.path == "/api/status":
-                registry = Registry()
-                result = set_real_status(registry, payload["name"], payload["status"], payload.get("platform", ""))
+                with Registry() as registry:
+                    result = set_real_status(registry, payload["name"], payload["status"], payload.get("platform", ""))
                 json_response(self, {"ok": True, **result})
                 return
             if self.path == "/api/importance":
-                count = Registry().set_importance(payload.get("ids", []), payload.get("importance", ""))
+                count = registry_call('set_importance', payload.get("ids", []), payload.get("importance", ""))
                 json_response(self, {"ok": True, "count": count})
                 return
             if self.path == "/api/delete":
-                registry = Registry()
-                result = delete_capability(
-                    registry,
-                    payload["name"],
-                    payload.get("platform", ""),
-                    bool(payload.get("confirmed")),
-                )
+                with Registry() as registry:
+                    result = delete_capability(
+                        registry,
+                        payload["name"],
+                        payload.get("platform", ""),
+                        bool(payload.get("confirmed")),
+                    )
                 json_response(self, {"ok": True, **result})
                 return
             if self.path == "/api/update-check":
@@ -8186,7 +8267,7 @@ def web_command(args: argparse.Namespace) -> None:
     if host not in ("127.0.0.1", "localhost"):
         raise ValueError("The management server supports loopback only")
     host = "127.0.0.1"
-    Registry()
+    Registry().conn.close()
     server = http.server.ThreadingHTTPServer((host, port), AdminHandler)
     import web_jobs
     server.maintenance_jobs = web_jobs.Jobs(sys.modules[__name__])

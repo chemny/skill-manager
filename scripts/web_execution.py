@@ -5,6 +5,41 @@ import maintenance as core
 ACTIONS = {'execute','execute-library-many','execute-backups','execute-restore-many','empty-trash'}
 
 
+def uninstall_references(m, ids):
+    if not isinstance(ids,list) or not ids or len(ids)>1000 or any(not isinstance(x,str) for x in ids):
+        raise ValueError('Invalid uninstall scope')
+    protected = {r['id'] for r in m.db.execute('select id from maintenance_items where protected=1')}
+    from component_ownership import Ownership
+    ownership = Ownership()
+    by_real, by_inode, policies = {}, {}, {}
+    # Build once for a bulk selection; write-time affected() still revalidates.
+    for ref in m.db.execute('select id,platform,path from capabilities'):
+        ref = dict(ref)
+        path = Path(ref['path'])
+        by_real.setdefault(str(path.resolve()),[]).append(ref)
+        try:
+            value = path.lstat()
+            by_inode.setdefault((value.st_dev,value.st_ino),[]).append(ref)
+        except OSError:
+            pass
+    result = {}
+    for target in dict.fromkeys(ids):
+        row = m.select(target)
+        path = Path(row['path'])
+        if path.is_symlink():
+            value = path.lstat()
+            refs = by_inode.get((value.st_dev,value.st_ino),[])
+        else:
+            refs = by_real.get(str(path.resolve()),[])
+        result[row['id']] = []
+        for ref in refs:
+            if ref['path'] not in policies:
+                policies[ref['path']] = ownership.classify(ref['path'])['read_only']
+            result[row['id']].append({**ref,'protected':ref['id'] in protected,
+                                      'read_only':policies[ref['path']]})
+    return {'references':result}
+
+
 def cleanup(m, plans):
     for plan in plans:
         saved = m.db.execute('select state from maintenance_plans where id=?', (plan['id'],)).fetchone()
@@ -54,13 +89,15 @@ def dispatch(m, p):
         if operation == 'update':
             results, skipped, seen = [], [], set()
             rows = [m.select(target) for target in targets]
-            for row in rows:
-                path = str(Path(row['path']).resolve())
-                if path in seen: continue
-                seen.add(path)
-                try: results.append(m.update_now(row))
-                except (ValueError,OSError) as exc:
-                    skipped.append({'id':row['id'],'name':row['name'],'path':row['path'],'platform':row['platform'],'reason':core.redact(str(exc))})
+            from check_batches import repository_archives
+            with repository_archives(m):
+                for row in rows:
+                    path = str(Path(row['path']).resolve())
+                    if path in seen: continue
+                    seen.add(path)
+                    try: results.append(m.update_now(row))
+                    except (ValueError,OSError) as exc:
+                        skipped.append({'id':row['id'],'name':row['name'],'path':row['path'],'platform':row['platform'],'reason':core.redact(str(exc))})
             return {'state':'partial' if skipped else 'succeeded','action':operation,'selected':len(targets),
                     'completed':len(results),'total':len(seen),'results':results,'skipped':skipped}
         v = library_batches.preview(m, operation, targets)
@@ -80,6 +117,7 @@ def dispatch(m, p):
         v = snapshots.dispatch(m, {'action':'preview-empty-trash'}) if action=='empty-trash' else core.dispatch(
             m, {**p,'action':'preview-purge-many'})
         try:
-            return recovery.apply_purge(m, [plan['id'] for plan in v['plans']], True) if v['plans'] else {
+            result = recovery.apply_purge(m, [plan['id'] for plan in v['plans']], True) if v['plans'] else {
                 'state':'succeeded','completed':0,'total':0,'results':[]}
+            return {**result,'skipped_count':v.get('skipped_retained',0)}
         finally: cleanup(m, v['plans'])

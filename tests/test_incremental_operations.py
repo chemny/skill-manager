@@ -17,9 +17,9 @@ class IncrementalOperationTests(unittest.TestCase):
         self.m.inventory()
         statements, walked = [], []
         original_size = maintenance.size
-        def measure(path, *args):
+        def measure(path, *args, **kwargs):
             walked.append(Path(path))
-            return original_size(path, *args)
+            return original_size(path, *args, **kwargs)
         self.m.db.set_trace_callback(statements.append)
         with patch.object(self.m.r, 'all_capabilities', side_effect=AssertionError('global inventory')), patch('maintenance.size', side_effect=measure):
             value = self.m.inventory([self.row('a')['id']])
@@ -38,6 +38,23 @@ class IncrementalOperationTests(unittest.TestCase):
         cached = {i['id']:i for i in self.m.cached_inventory()['items']}
         self.assertFalse(cached[aid]['present'])
         self.assertTrue(cached[self.row('b')['id']]['present'])
+
+    def test_delete_result_can_refresh_all_affected_agents_after_page_reload(self):
+        config = self.a.load_config()
+        alias = self.base / 'alias'
+        alias.symlink_to(self.roots, target_is_directory=True)
+        config['platforms']['codex'] = {'enabled':True, 'roots':[str(self.roots)]}
+        config['platforms']['claude_code'] = {'enabled':True, 'roots':[str(alias)]}
+        self.a.save_config(config)
+        self.m.scan(); self.m.inventory()
+        row = self.m.select(str(self.roots / 'a'), 'codex')
+        expected = {r['id'] for r in self.m.affected(Path(row['path']))}
+        with patch.object(self.m, 'scan', side_effect=AssertionError('full scan')):
+            result = self.m.apply(self.m.plan('delete', row)['id'])
+            self.assertEqual(set(result['inventory_ids']), expected)
+            refreshed = self.m.inventory(result['inventory_ids'])
+        self.assertTrue(refreshed['items'])
+        self.assertTrue(all(not item['present'] for item in refreshed['items']))
 
     def test_restore_new_location_registers_only_target_without_scan(self):
         self.m.inventory()

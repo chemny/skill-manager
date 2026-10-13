@@ -1,15 +1,16 @@
 """Conservative resource classification, resolved without initializing a writer DB."""
 import json
+from contextlib import closing
 import os
 import sqlite3
 from pathlib import Path
 
-NETWORK = {'check','check-many','discover-sources','discover-sources-batch','probe-source',
+NETWORK = {'discovery-refresh','discovery-verify','translate-descriptions','check','check-many','discover-sources','discover-sources-batch','probe-source',
            'install-identify','preview','preview-library-many'}
-READS = NETWORK | {'inventory','duplicate-review','inspect-space','directory-preview',
+READS = NETWORK | {'uninstall-references','cache-inspect','inventory','duplicate-review','inspect-space','directory-preview',
                    'classification-preview','verify-backup','backup-detail','backups','usage',
                    'history','plans','get-plan','install-roots','open-folder','taxonomy','source-search-policy'}
-COMMITS = {'execute','execute-library-many','execute-backups','execute-restore-many','empty-trash',
+COMMITS = {'cache-clean','execute','execute-library-many','execute-backups','execute-restore-many','empty-trash',
            'update-now','apply','apply-library-many','apply-restore-many','apply-purge-many','backup',
            'recover','import-backup','create-snapshot','import-snapshot','export-backup'}
 
@@ -32,7 +33,7 @@ def describe(legacy, request):
     if not legacy.DB_PATH.exists():
         result['global']=write
         return result
-    with sqlite3.connect(legacy.DB_PATH.as_uri()+'?mode=ro',uri=True,timeout=2) as db:
+    with closing(sqlite3.connect(legacy.DB_PATH.as_uri()+'?mode=ro',uri=True,timeout=2)) as db:
         db.row_factory=sqlite3.Row
         def target(selector):
             if not isinstance(selector,str) or not selector: return
@@ -60,6 +61,10 @@ def describe(legacy, request):
             backup(request.get('id'))
         for selector in request.get('targets',[]):target(selector)
         ids=request.get('ids',[])
+        if action in ('check-many','inventory') and ids:
+            exact = {r['id']:r['path'] for r in db.execute('select id,path from capabilities where id in (select value from json_each(?))', (json.dumps(ids),))}
+            for path in set(exact.values()): add(path)
+            ids = [selector for selector in ids if selector not in exact]
         for selector in ids:
             if action=='execute-backups':backup(selector)
             elif action.startswith('apply-') or action=='discard-previews':plan(selector)

@@ -4,25 +4,27 @@
 
 ## 项目简介
 
-Agent Skill Manager 把本机安装的 Skills 集中到一个管理页面。适合同时使用多个 Agent、经常安装 Skills，希望查找技能、检查更新、安装新内容和恢复误删文件的用户。
+Agent Skill Manager 把本机安装的 Skills 集中到一个管理页面。适合希望看清多个 Agent 中装了什么、安全维护本地技能，并发现新 Skills 的用户。
 
 本地 Web 后台是主要入口，也可以让 Agent 调用 Python CLI。两者共用 SQLite 数据库和维护逻辑，运行管理器本身不需要模型 API。
 
 ## 效果预览
 
-![本地管理后台的 Skills 列表，使用示例数据](assets/skill-manager-preview.png)
+![首页示例数据，展示本机概览、榜单和 Skills 商店](assets/skill-manager-preview.png)
 
 ## 核心功能
 
 | 功能 | 可以做什么 |
 | --- | --- |
 | 统一列表 | 合并展示同一 Skill 的 Agent 关联，查看安装时间、占用空间、分类和更新状态；磁盘上的独立安装目录仍各自保留。 |
+| 首页与发现 | 首页概览 Skills、Agent、可用更新和磁盘占用；商店提供榜单、分类和搜索。首页展示近期核实的 Skills；只有符合条件的项目不少于 5 个时才显示“今日推荐”。 |
 | 检查更新 | 针对所有可检查的已安装 Skills 比对登记来源；成功结果在 15 分钟内复用，失败项可重试，并遵守来源服务的限流规则。 |
 | 安装 Skills | 支持公开仓库链接、HTTPS ZIP 链接、本地文件夹和 ZIP，选择 Agent 与安装位置后安装。 |
 | Agent 目录 | 使用预设添加 Agent，自动匹配操作系统的默认路径；也可在设置中登记自定义目录。 |
 | 备份与恢复 | 创建、恢复备份；删除的备份和卸载的 Skills 进入回收站，回收站项目经确认后才永久删除。 |
 | 分类与标签 | 给 Skills 设置基础分类和标签，直接筛选列表、点击表头排序。 |
 | 操作记录 | 查看失败或中断的操作，需要排查时导出诊断记录。 |
+| 缓存清理 | 查看并清理管理器过期的临时文件，不触碰已安装 Skills 和备份。 |
 
 ## 安装
 
@@ -37,6 +39,7 @@ Agent Skill Manager 把本机安装的 Skills 集中到一个管理页面。适�
 | Git 与网络 | Git 来源检查和更新需要 Git；公开来源服务可能限制请求次数。 |
 | 文件选择器 | macOS 使用系统选择器，其他平台在可用时使用 Python Tkinter；也可手动填写本地路径。 |
 | 操作系统 | 已在 macOS 测试。Windows 路径与适配代码经过审查及模拟测试，但尚未进行 Windows 真机测试；Windows 不支持自动创建共享链接。 |
+| 可选翻译 | 首页英文简介可调用本机 Ollama 的 `qwen3.5:4b` 模型翻译（可用 `SKILL_MANAGER_TRANSLATION_MODEL` 指定其他模型）。没有该服务也能使用管理器，简介不会发送给在线翻译服务。 |
 
 ### 快速安装
 
@@ -55,7 +58,7 @@ Agent 应告知实际安装位置，以及命令行入口是否可用。
 用 skill-manager 扫描我已安装的 Skills，并打开管理后台。
 ```
 
-管理页面会在本机打开。先查看“全部”，再选择 Agent 或筛选列表。“刷新”同步清单，“扫描”发现已配置目录中的变化。
+管理页面会在本机打开。首页先展示安装概览和近期 Skills；进入“全部”管理 Agent 的 Skills，进入“发现”浏览目录。“刷新”核对已登记项目，“扫描”发现已配置目录中的变化。
 
 ## 使用示例
 
@@ -91,18 +94,26 @@ Agent 应告知实际安装位置，以及命令行入口是否可用。
 
 预设会使用当前操作系统对应的默认目录。移除 Agent 管理配置不会删除它的 Skills 文件。共享目录可能供多个 Agent 使用，卸载其中的共享内容会影响这些 Agent。
 
+### 发现一个 Skill
+
+```text
+帮我找最近上架的写作和文档类 Skills。
+```
+
+商店通过公开目录提供榜单、分类和搜索。打开项目可查看来源；目录结果不会自动成为本机已安装 Skill 的更新来源。“今日推荐”会核实仓库内存在可用的 `SKILL.md` 并检查近期证据；不足 5 条时，首页改为展示今日上新。
+
 ## 工作原理
 
-管理器扫描配置的目录，在 SQLite 中记录安装项目、来源证据、更新结果和操作历史。页面复用 15 分钟内的清单数据，备份列表缓存一小时；写入操作完成后刷新受影响的记录。
+管理器扫描配置的目录，在 SQLite 中记录安装项目、来源证据、更新结果和操作历史。页面复用 15 分钟内的清单数据，备份列表缓存一小时；发现结果和翻译简介也在本机缓存。外部目录和 GitHub 请求有频率限制，来源可能分别失败；写入操作完成后刷新受影响的记录。
 
 | 组件 | 职责 |
 | --- | --- |
 | `SKILL.md` | Agent 使用管理器时遵循的指令。 |
 | `scripts/agent_skill_manager.py` 与 `bin/asm` | Python CLI、本地 Web 服务和 macOS/POSIX 命令包装器；Windows 可直接调用 Python 脚本。 |
-| `assets/maintenance.html` | 清单、更新、安装、备份、回收站和设置界面。 |
+| `assets/maintenance.html` | 首页、清单、发现、更新、安装、备份、回收站和设置界面。 |
 | `scripts/` 内的维护模块 | 来源检查、内置归属判断、文件校验、备份、任务执行与恢复。 |
 
-服务只监听本机回环地址，使用本地请求令牌。默认数据保存在 `~/.agent-skill-manager`，可用 `ASM_HOME` 指定隔离的数据目录。来源检索和更新检查会请求配置的服务。诊断记录可能包含本机路径，分享前请核对内容。
+服务只监听本机回环地址，使用本地请求令牌。默认数据保存在 `~/.agent-skill-manager`，可用 `ASM_HOME` 指定隔离的数据目录。发现、来源检索和更新检查会请求公开服务；可选翻译只调用本机 Ollama。诊断记录可能包含本机路径，分享前请核对内容。
 
 内置归属依据实际证据判断，不把整个 Agent 目录一律视为不可操作。清理建议仅供参考：版本较旧或存在同名副本，都不足以证明内容可以安全删除。
 
@@ -113,14 +124,14 @@ SKILL.md                         Agent 使用指令
 scripts/                         CLI、服务与维护模块
 bin/asm                          POSIX 命令包装器
 assets/maintenance.html          管理后台
-assets/skill-manager-preview.png 示例数据截图
+assets/skill-manager-preview.png 首页示例数据截图
 references/                      使用、接口与图标来源文档
 tests/                           隔离自动化测试
 README.md / README.zh.md         英文与中文介绍
 LICENSE                          项目许可
 ```
 
-详细信息见[维护命令](references/maintenance.md)、[Web API](references/web-api.md)、[Agent 图标来源](references/agent-icons.md)和[中文用途目录](references/purpose-zh.json)。开发变更记录在 [CHANGELOG.md](CHANGELOG.md)。
+详细信息见[维护命令](references/maintenance.md)、[Web API](references/web-api.md)、[浏览器回归测试](references/browser-tests.md)、[Agent 图标来源](references/agent-icons.md)和[中文用途目录](references/purpose-zh.json)。开发变更记录在 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 许可
 

@@ -30,6 +30,8 @@ class BackgroundBrowsingTests(unittest.TestCase):
                     for action in core.BROWSE_ACTIONS:
                         payload={'action':action,'id':backup['id'] if action=='backup-detail' else plan['id'],'ids':[backup['id']]}
                         if action=='restore-targets':payload['entries']=[{'id':backup['id']}]
+                        if action=='uninstall-references':payload['ids']=[self.row('a')['id']]
+                        if action=='inventory-detail':payload['id']=self.row('a')['id']
                         if action=='open-directory':payload['path']=str(self.roots)
                         value=core.api_dispatch(self.a,payload)
                         self.assertIsInstance(value,dict)
