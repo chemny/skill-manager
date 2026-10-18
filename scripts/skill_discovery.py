@@ -12,6 +12,7 @@ import os
 import re
 import sqlite3
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -23,6 +24,20 @@ CATALOG_TTL = 6 * 3600
 SEARCH_TTL = 24 * 3600
 VERIFY_TTL = 6 * 3600
 PROVIDERS = ('clawhub', 'skillsmp')
+SEARCH_PAGE_SIZE = 30
+SEARCH_CANDIDATE_PAGES = 4
+
+
+def title_rank(name, query):
+    title = unicodedata.normalize('NFKC', str(name or '')).strip().casefold()
+    query = unicodedata.normalize('NFKC', query).strip().casefold()
+    if title == query:
+        return 0
+    if title.startswith(query):
+        return 1
+    if title.endswith(query):
+        return 3
+    return 2 if query in title else None
 
 
 def selection(payload):
@@ -31,9 +46,11 @@ def selection(payload):
     page = payload.get('page', 1)
     if provider not in ('', 'skillhub', *PROVIDERS) or not isinstance(category, str) or not re.fullmatch(r'[a-z0-9-]{0,80}', category):
         raise ValueError('Invalid discovery filter')
-    if type(page) is not int or not 1 <= page <= 1000:
+    if type(page) is not int or not 1 <= page <= 10000:
         raise ValueError('Invalid discovery page')
-    if (category or page != 1) and provider != 'skillhub':
+    if category and provider != 'skillhub':
+        raise ValueError('此来源暂不支持分类或分页')
+    if page != 1 and provider != 'skillhub' and not (provider == 'clawhub' and payload.get('view') == 'all'):
         raise ValueError('此来源暂不支持分类或分页')
     if provider == 'skillsmp' and payload.get('view') != 'search':
         raise ValueError('SkillsMP 仅支持搜索')
@@ -44,29 +61,40 @@ def selection(payload):
 
 def request_key(provider, view, query, payload):
     _, category, page = selection(payload)
+    if view == 'search':
+        return json.dumps(['title-v1', provider, query, category], ensure_ascii=False)
     return cache_key(provider, view, query) if not category and page == 1 else json.dumps([provider, view, query, category, page])
 
 
 class Catalog(list):
-    def __init__(self, items, total, categories):
+    def __init__(self, items, total, categories, limited=False):
         super().__init__(items)
         self.total, self.categories = total, categories
+        self.limited = limited
 
 
 def fetch_skillhub(view, query, category, page):
-    params = {'page': page, 'pageSize': 30, 'sortBy': 'downloads', 'order': 'desc'}
-    if query:
-        params['keyword'] = query
-    if category:
-        params['category'] = category
-    data = remote_json('https://api.skillhub.cn/api/skills?' + urllib.parse.urlencode(params), 'skillhub')
-    if data.get('code') != 0 or not isinstance(data.get('data', {}).get('skills'), list):
-        raise ValueError('Invalid SkillHub response')
+    rows, total = [], 0
+    pages = range(1, SEARCH_CANDIDATE_PAGES + 1) if view == 'search' else (page,)
+    for current_page in pages:
+        params = {'page': current_page, 'pageSize': SEARCH_PAGE_SIZE, 'sortBy': 'downloads', 'order': 'desc'}
+        if query:
+            params['keyword'] = query
+        if category:
+            params['category'] = category
+        data = remote_json('https://api.skillhub.cn/api/skills?' + urllib.parse.urlencode(params), 'skillhub')
+        if data.get('code') != 0 or not isinstance(data.get('data', {}).get('skills'), list):
+            raise ValueError('Invalid SkillHub response')
+        batch = data['data']['skills']
+        rows.extend(batch)
+        total = data['data'].get('total', len(rows))
+        if view != 'search' or not batch or len(rows) >= total:
+            break
     categories = remote_json('https://api.skillhub.cn/api/v1/categories', 'skillhub').get('items', [])
     categories = [{'key': c['key'], 'name': short(c.get('name'), 60)} for c in categories
                   if isinstance(c, dict) and re.fullmatch(r'[a-z0-9-]{1,80}', str(c.get('key', '')))]
     items = []
-    for row in data['data']['skills']:
+    for row in rows:
         url = safe_url(row.get('homepage'), 'api.skillhub.cn')
         if not url or not row.get('slug'):
             continue
@@ -77,9 +105,9 @@ def fetch_skillhub(view, query, category, page):
                       'description': short(row.get('description_zh') or row.get('description'), 1500),
                       'version': short(row.get('version'), 100), 'published_at': row.get('created_at'),
                       'stats': {k: row[k] for k in ('downloads', 'stars', 'installs') if isinstance(row.get(k), (int, float)) and row[k] >= 0}})
-    if data['data']['skills'] and not items:
+    if rows and not items:
         raise ValueError('Catalog items could not be identified')
-    return Catalog(items, data['data'].get('total', len(items)), categories)
+    return Catalog(items, total, categories, view == 'search' and len(rows) < total)
 SCHEMA = """
 create table if not exists discovery_cache (
  cache_key text primary key, provider text not null, fetched_at real not null default 0,
@@ -169,7 +197,7 @@ def failure(error):
 def options(payload):
     view = payload.get('view', 'trending')
     query = payload.get('query', '')
-    if view not in ('trending', 'new', 'search') or not isinstance(query, str) or len(query) > 160:
+    if view not in ('all', 'trending', 'new', 'search') or not isinstance(query, str) or len(query) > 160:
         raise ValueError('Invalid discovery query')
     query = query.strip()
     if any(ord(c) < 32 for c in query) or (view == 'search' and not query):
@@ -231,18 +259,25 @@ def normalize(provider, data):
     return items
 
 
-def fetch(provider, view, query):
+def fetch(provider, view, query, cursor=None):
     if provider == 'clawhub':
         params = {'limit': 30, 'nonSuspiciousOnly': 'true'}
         if view == 'search':
             params['q'] = query
+        elif view == 'all':
+            if cursor:
+                params['cursor'] = cursor
         else:
             params['sort'] = 'trending' if view == 'trending' else 'createdAt'
         url = 'https://clawhub.ai/api/v1/' + ('search' if view == 'search' else 'skills')
     else:
         params = {'q': query, 'limit': 30, 'sortBy': 'stars'}
         url = 'https://skillsmp.com/api/v1/skills/search'
-    return normalize(provider, remote_json(url + '?' + urllib.parse.urlencode(params), provider))
+    data = remote_json(url + '?' + urllib.parse.urlencode(params), provider)
+    items = normalize(provider, data)
+    if view == 'all' and provider == 'clawhub':
+        return Catalog(items, 0, [], bool(data.get('nextCursor'))), data.get('nextCursor')
+    return items
 
 
 def table_exists(db, name):
@@ -250,11 +285,13 @@ def table_exists(db, name):
 
 
 def installed_index(manager):
-    sources, names = set(), set()
+    sources, names, catalog_sources = set(), set(), set()
     for row in manager.db.execute("select c.name,m.source from capabilities c left join maintenance_items m on m.id=c.id where c.kind='skill' and c.health not in ('missing','not-scanned','broken-link')"):
         names.add(row['name'].casefold())
         try:
             source = json.loads(row['source'] or '{}')
+            if source.get('provider') in ('skillhub', 'clawhub') and re.fullmatch(r'[A-Za-z0-9_.-]+', str(source.get('slug') or '')):
+                catalog_sources.add((source['provider'],source['slug'].casefold()))
             if source.get('provider') != 'github':
                 continue
             url = safe_url(source.get('url', ''), 'github.com')
@@ -269,17 +306,43 @@ def installed_index(manager):
             sources.add(('/'.join(parts[:2]).removesuffix('.git').casefold(), path))
         except (TypeError, ValueError, KeyError, AttributeError):
             continue
-    return sources, names
+    return sources, names, catalog_sources
+
+
+def group_verified_copies(items):
+    """Collapse only candidates verified at the same pinned GitHub Skill path."""
+    groups, result = {}, []
+    for item in items:
+        verified = item.get('verification') if item.get('verification_fresh') and not item.get('verification_error') else None
+        key = None
+        if verified and verified.get('install_url'):
+            try:
+                location = github_location(verified['install_url'])
+                key = (location['repo'].casefold(), location['ref'], location['path'], item['name'].casefold())
+            except (TypeError, ValueError, KeyError):
+                pass
+        if key is not None and key in groups:
+            group = groups[key]
+            group['alternatives'].append({'id': item['id'], 'provider': item['provider'],
+                                          'url': item['url'], 'name': item['name']})
+            if item.get('installed') == 'source_match' or (item.get('installed') == 'name_only' and group.get('installed') == 'unknown'):
+                group['installed'] = item['installed']
+            continue
+        if key is not None:
+            groups[key] = item
+            item['alternatives'] = []
+        result.append(item)
+    return result
 
 
 def cached(manager, payload):
     view, query = options(payload)
     provider, category, page = selection(payload)
-    providers = (provider,) if provider else PROVIDERS if view == 'search' else ('clawhub',)
+    providers = (provider,) if provider else PROVIDERS if view == 'search' else ('skillhub',) if view == 'all' else ('clawhub',)
     now, items, states = time.time(), [], []
-    total, categories = 0, []
+    total, categories, limited, has_more = 0, [], False, False
     available = table_exists(manager.db, 'discovery_cache')
-    sources, names = installed_index(manager)
+    sources, names, catalog_sources = installed_index(manager)
     for provider in providers:
         key = request_key(provider, view, query, payload)
         row = manager.db.execute('select * from discovery_cache where cache_key=?', (key,)).fetchone() if available else None
@@ -294,15 +357,21 @@ def cached(manager, payload):
         if isinstance(stored, dict):
             total += stored.get('total', 0)
             categories = stored.get('categories', [])
+            limited |= bool(stored.get('limited', False))
+            has_more |= bool(stored.get('next_cursor'))
             stored = stored['items']
         else:
             total += len(stored)
+            if view == 'search' and len(stored) >= SEARCH_PAGE_SIZE:
+                limited = True
         for item in stored:
             saved = manager.db.execute('select payload,verification,verified_at,error from discovery_candidates where id=?', (item['id'],)).fetchone()
             if saved:
                 # Another search may have observed a changed original URL for this identity.
                 item.update(json.loads(saved['payload']))
             item['installed'] = 'unknown'
+            if (item['provider'],str(item.get('slug') or '').casefold()) in catalog_sources:
+                item['installed'] = 'source_match'
             try:
                 info = github_location(item['github_url'])
                 if (info['repo'].casefold(), info['path']) in sources:
@@ -317,7 +386,16 @@ def cached(manager, payload):
             item['verification_error'] = saved['error'] if saved else ''
             item['verification_fresh'] = bool(saved and now - saved['verified_at'] < VERIFY_TTL)
             items.append(item)
-    return {'view': view, 'query': query, 'items': items, 'providers': states, 'total': total, 'categories': categories, 'page': page}
+    if view == 'search':
+        items = [item for item in items if title_rank(item['name'], query) is not None]
+        items.sort(key=lambda item: (title_rank(item['name'], query), unicodedata.normalize('NFKC', item['name']).casefold(), item['id']))
+        items = group_verified_copies(items)
+        total = len(items)
+        if provider == 'skillhub':
+            items = items[(page - 1) * SEARCH_PAGE_SIZE:page * SEARCH_PAGE_SIZE]
+    else:
+        items = group_verified_copies(items)
+    return {'view': view, 'query': query, 'items': items, 'providers': states, 'total': total, 'categories': categories, 'page': page, 'has_more': has_more, 'search_limited': limited if view == 'search' else False}
 
 
 def refresh(manager, payload):
@@ -328,18 +406,30 @@ def refresh(manager, payload):
         pending = [s['provider'] for s in state['providers'] if s['needs_refresh']]
         # Network runs outside SQLite transactions; one unavailable source cannot erase another.
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            futures = {p: pool.submit(fetch_skillhub, view, query, category, page) if p == 'skillhub' else pool.submit(fetch, p, view, query) for p in pending}
+            futures = {}
+            for p in pending:
+                if p == 'skillhub':
+                    futures[p] = pool.submit(fetch_skillhub, view, query, category, page)
+                elif p == 'clawhub' and view == 'all':
+                    previous = manager.db.execute('select payload from discovery_cache where cache_key=?', (request_key(p, view, query, dict(payload, page=page - 1)),)).fetchone() if page > 1 else None
+                    previous_data = json.loads(previous[0]) if previous else None
+                    if page > 1 and (not isinstance(previous_data, dict) or not previous_data.get('next_cursor')):
+                        raise ValueError('请从第一页依次浏览')
+                    futures[p] = pool.submit(fetch, p, view, query, previous_data.get('next_cursor') if previous_data else None)
+                else:
+                    futures[p] = pool.submit(fetch, p, view, query)
             for provider, future in futures.items():
                 key, now = request_key(provider, view, query, payload), time.time()
                 try:
-                    items = future.result()
+                    fetched = future.result()
+                    items, next_cursor = fetched if provider == 'clawhub' and view == 'all' else (fetched, None)
                 except Exception as error:
                     message, retry, rate_limit = failure(error)
                     manager.db.execute("insert into discovery_cache(cache_key,provider,attempted_at,retry_at,error) values(?,?,?,?,?) on conflict(cache_key) do update set attempted_at=excluded.attempted_at,retry_at=excluded.retry_at,error=excluded.error", (key, provider, now, retry, message))
                     if rate_limit:
                         manager.db.execute('insert into discovery_cooldowns values(?,?) on conflict(provider) do update set until_at=max(until_at,excluded.until_at)', (provider, retry))
                 else:
-                    stored = {'items': items, 'total': items.total, 'categories': items.categories} if isinstance(items, Catalog) else items
+                    stored = {'items': items, 'total': items.total, 'categories': items.categories, 'limited': items.limited, 'next_cursor': next_cursor} if isinstance(items, Catalog) else items
                     manager.db.execute("insert into discovery_cache values(?,?,?,?,?,?,?) on conflict(cache_key) do update set fetched_at=excluded.fetched_at,attempted_at=excluded.attempted_at,retry_at=0,error='',payload=excluded.payload", (key, provider, now, now, 0, '', json.dumps(stored)))
                     for item in items:
                         old = manager.db.execute('select payload from discovery_candidates where id=?', (item['id'],)).fetchone()

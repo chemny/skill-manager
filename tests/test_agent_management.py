@@ -1,7 +1,7 @@
 import unittest
 import test_maintenance as fixtures
 import library_actions
-from skill_locations import add_preset_agent, agent_catalog, locations
+from skill_locations import add_preset_agent, agent_catalog, discover_agent_candidates, locations
 
 
 class AgentManagementTests(unittest.TestCase):
@@ -64,3 +64,25 @@ class AgentManagementTests(unittest.TestCase):
     def test_custom_directory_cannot_be_removed_as_agent(self):
         with self.assertRaises(ValueError):
             self.a.update_source('remove-agent', 'shared', '')
+
+    def test_candidate_scan_finds_only_unregistered_agent_skill_stores(self):
+        for root in (self.base/'.devin/skills', self.base/'.cursor/skills', self.base/'.empty/skills',
+                     self.base/'.config/goose/skills', self.base/'.configured/skills'):
+            root.mkdir(parents=True)
+        for root in (self.base/'.devin/skills', self.base/'.cursor/skills',
+                     self.base/'.config/goose/skills', self.base/'.configured/skills'):
+            skill = root/'example'; skill.mkdir(); (skill/'SKILL.md').write_text('---\nname: example\n---\n')
+        config = self.a.load_config()
+        saved = self.a.load_config()
+        config['platforms']['configured'] = {'roots': [str(self.base/'.configured/skills')]}
+        found = discover_agent_candidates(config, home=self.base)
+        self.assertEqual({entry['id'] for entry in found}, {'devin', 'goose'})
+        self.assertEqual({entry['root'] for entry in found},
+                         {str(self.base/'.devin/skills'), str(self.base/'.config/goose/skills')})
+        self.assertEqual(self.a.load_config(), saved)
+
+    def test_candidate_scan_does_not_follow_symlinked_skill_directories(self):
+        target = self.base/'.real/skills'; target.mkdir(parents=True)
+        skill = target/'example'; skill.mkdir(); (skill/'SKILL.md').write_text('example')
+        (self.base/'.alias').symlink_to(target.parent, target_is_directory=True)
+        self.assertEqual([entry['id'] for entry in discover_agent_candidates(self.a.load_config(), home=self.base)], ['real'])

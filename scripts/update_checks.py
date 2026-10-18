@@ -147,6 +147,10 @@ def compare(manager, row, force=False, cache_only=False):
             value = manager._check_remote(row)
         finally:
             manager._defer_check_save = deferred
+        if value.get('source_correction'):
+            source=manager.source(row)
+            identity['source']={k:source.get(k) for k in ('provider','url','ref','path','channel')}
+            key=core.fingerprint(identity)
         value.update(cache_hit=False, remote_requested=True, comparison_source=source,
                      local_fingerprint=value.get('local_fingerprint', local), comparison_key=key)
         api_retry_at = getattr(manager, '_github_api_state', {}).get('retry_at')

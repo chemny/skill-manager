@@ -102,6 +102,45 @@ def agent_catalog(config):
     return catalog
 
 
+def discover_agent_candidates(config, home=None):
+    """Find unregistered skill stores in conventional local Agent homes."""
+    home = Path(home or Path.home()).expanduser()
+    known = set()
+    for agent in BUILTIN_AGENTS:
+        known.update(str(Path(root).expanduser().resolve()) for root in default_agent_roots(agent, home=home))
+    for settings in config.get('platforms', {}).values():
+        known.update(str(Path(root).expanduser().resolve()) for root in settings.get('roots', []))
+
+    bases = []
+    try:
+        bases.extend(p for p in home.iterdir() if p.is_dir() and p.name.startswith('.') and not p.is_symlink())
+    except OSError:
+        return []
+    config_home = home / '.config'
+    if config_home.is_dir() and not config_home.is_symlink():
+        try:
+            bases.extend(p for p in config_home.iterdir() if p.is_dir() and not p.is_symlink())
+        except OSError:
+            pass
+
+    candidates = []
+    for base in bases:
+        root = base / 'skills'
+        if root.is_symlink() or not root.is_dir() or str(root.resolve()) in known:
+            continue
+        name = base.name.lstrip('.')
+        agent = re.sub(r'[^a-z0-9_-]+', '-', name.lower()).strip('-_')
+        if not re.fullmatch(r'[a-z][a-z0-9_-]{0,63}', agent) or agent in BUILTIN_AGENTS or agent in ('agents', 'skills-manager'):
+            continue
+        try:
+            has_skill = any(child.is_dir() and not child.is_symlink() and (child / 'SKILL.md').is_file() for child in root.iterdir())
+        except OSError:
+            continue
+        if has_skill:
+            candidates.append({'id': agent, 'label': name.replace('-', ' ').replace('_', ' ').title(), 'root': str(root)})
+    return sorted(candidates, key=lambda item: (item['label'].casefold(), item['root']))
+
+
 def path(value):
     value = os.path.expandvars(os.path.expanduser(str(value)))
     if os.name == 'nt':

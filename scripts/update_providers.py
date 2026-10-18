@@ -69,6 +69,27 @@ def service(legacy, name, registry=None):
     return channel
 
 
+def capabilities(channel):
+    name, kind = channel['name'], channel['kind']
+    if name == 'github' or kind in ('skills-sh', 'skillhub'):
+        return {'test_supported': True, 'search_supported': True, 'capability_note': ''}
+    if name == 'skillsmp':
+        return {'test_supported': True, 'search_supported': True, 'capability_note': ''}
+    if name == 'gitlab':
+        return {'test_supported': True, 'search_supported': True, 'capability_note': '搜索公开仓库；Skill 子目录需核对'}
+    if name == 'gitcode':
+        return {'test_supported': True, 'search_supported': False, 'capability_note': '公开仓库搜索需要 GitCode 授权令牌；已知仓库仍可用于更新'}
+    if name == 'gitee':
+        return {'test_supported': True, 'search_supported': False, 'capability_note': '搜索接口在当前网络下不稳定；已知仓库仍可用于更新'}
+    if kind == 'repository':
+        return {'test_supported': True, 'search_supported': False, 'capability_note': '仓库入口可检查连接，尚无可靠的全站 Skills 检索'}
+    if kind == 'git':
+        return {'test_supported': True, 'search_supported': False, 'capability_note': '可检查指定仓库，不能按关键词搜索整个仓库'}
+    if kind == 'local':
+        return {'test_supported': True, 'search_supported': False, 'capability_note': '本机版本记录不提供远程搜索'}
+    return {'test_supported': False, 'search_supported': False, 'capability_note': '尚无可验证的独立连接与搜索接口'}
+
+
 def identity(src):
     if not src:
         return None
@@ -196,25 +217,45 @@ def download(legacy, src, folder):
 
 def test_connection(legacy, name):
     channel = service(legacy, name)
-    if name == 'github':
-        data = legacy.github_json('https://api.github.com/rate_limit')
-        if not isinstance(data.get('resources'),dict): raise ValueError('GitHub 返回格式不兼容')
-        result = {'message':'GitHub API 连接成功'}
-    elif channel['kind'] == 'skills-sh':
-        data = api_json(channel, '/api/search?' + urlencode({'q':'find-skills','limit':1}))
-        if not isinstance(data.get('skills'),list): raise ValueError('skills.sh 返回格式不兼容')
-        result = {'message':'Vercel Skills 搜索接口连接成功', 'matches':len(data['skills'])}
-    elif channel['kind'] == 'skillhub':
-        data = api_json(channel, '/api/skills?' + urlencode({'keyword':'find skill', 'pageSize':1}))
-        if not isinstance(data.get('data', {}).get('skills'), list):
-            raise ValueError('更新源返回格式不兼容')
-        result = {'message':'搜索接口连接成功', 'matches':data['data'].get('total', 0)}
-    elif channel['kind'] == 'git':
-        run = subprocess.run(['git','ls-remote',channel['base_url'],'HEAD'], capture_output=True, text=True, timeout=20, check=False)
-        if run.returncode or not run.stdout.strip():
-            raise ValueError('无法读取公开 Git 仓库，请检查地址及访问权限')
-        result = {'message':'Git 仓库连接成功'}
-    else:
-        raise ValueError('此渠道尚不支持独立连接测试')
+    try:
+        if not capabilities(channel)['test_supported']:
+            raise ValueError('此渠道没有可验证的独立连接接口')
+        if name == 'github':
+            data = legacy.github_json('https://api.github.com/rate_limit')
+            if not isinstance(data.get('resources'),dict): raise ValueError('GitHub 返回格式不兼容')
+            result = {'message':'GitHub API 连接成功'}
+        elif channel['kind'] == 'skills-sh':
+            data = api_json(channel, '/api/search?' + urlencode({'q':'find-skills','limit':1}))
+            if not isinstance(data.get('skills'),list): raise ValueError('skills.sh 返回格式不兼容')
+            result = {'message':'Vercel Skills 搜索接口连接成功', 'matches':len(data['skills'])}
+        elif channel['kind'] == 'skillhub':
+            data = api_json(channel, '/api/skills?' + urlencode({'keyword':'find skill', 'pageSize':1}))
+            if not isinstance(data.get('data', {}).get('skills'), list):
+                raise ValueError('更新源返回格式不兼容')
+            result = {'message':'搜索接口连接成功', 'matches':data['data'].get('total', 0)}
+        elif name == 'skillsmp':
+            data = api_json(channel, '/api/v1/skills/search?' + urlencode({'q':'find-skills','limit':1,'sortBy':'recent'}))
+            if not isinstance((data.get('data') or {}).get('skills'), list):
+                raise ValueError('SkillsMP 返回格式不兼容')
+            result = {'message':'SkillsMP 搜索接口连接成功'}
+        elif name == 'gitlab':
+            data = api_json(channel, '/api/v4/projects?' + urlencode({'search':'skill','per_page':1}))
+            if not isinstance(data, list): raise ValueError('GitLab 返回格式不兼容')
+            result = {'message':'GitLab 公开仓库搜索可用'}
+        elif channel['kind'] == 'repository':
+            url = public_url(channel['base_url'])
+            with urllib.request.urlopen(urllib.request.Request(url, method='HEAD', headers={'User-Agent':'Skill-Manager'}), timeout=12) as response:
+                if response.status >= 400: raise ValueError('仓库站点当前不可访问')
+            result = {'message':'仓库站点可访问；全站 Skills 搜索未接入'}
+        elif channel['kind'] == 'git':
+            run = subprocess.run(['git','ls-remote',channel['base_url'],'HEAD'], capture_output=True, text=True, timeout=20, check=False)
+            if run.returncode or not run.stdout.strip():
+                raise ValueError('无法读取公开 Git 仓库，请检查地址及访问权限')
+            result = {'message':'Git 仓库连接成功'}
+        else:
+            result = {'message':'本机版本记录可用，无需网络连接'}
+    except Exception as exc:
+        legacy.record_channel_event(name, 'test', 'failure', message=type(exc).__name__)
+        raise
     legacy.record_channel_event(name, 'test', 'success')
     return result

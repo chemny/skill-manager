@@ -11,7 +11,7 @@ import task_scopes
 
 
 class BusyError(ValueError):
-    pass
+    busy = True
 
 
 class Jobs:
@@ -25,6 +25,7 @@ class Jobs:
     def __init__(self, legacy):
         self.legacy = legacy
         self.lock = threading.Lock()
+        self.scope_changed = threading.Condition(self.lock)
         self.records = {}
         self.active = set()
         self.scopes = {}
@@ -89,6 +90,12 @@ class Jobs:
         if ui_scope is not None and (not isinstance(ui_scope,dict) or ui_scope.get('view') not in ('home','discovery','skills','updates','backups','trash','settings','sources','suggestions','install','plans') or not isinstance(ui_scope.get('key'),str) or len(ui_scope['key'])>12000):
             raise ValueError('Invalid view scope')
         with self.lock:
+            if request['action'] == 'classification-apply':
+                for existing in self.active:
+                    if self.records[existing]['action'] == 'classification-apply':
+                        if self.records[existing].get('field','both') == request.get('field','both'):
+                            return copy.deepcopy(self.records[existing])
+                        raise BusyError('另一个自动分类任务正在处理，请等待完成后重试。')
             inventory_key = (None if request.get('ids') is None else tuple(sorted(set(request['ids']))), bool(request.get('lightweight'))) if request['action']=='inventory' else None
             if inventory_key:
                 for existing in self.active:
@@ -102,10 +109,12 @@ class Jobs:
                             self.records[existing]['ui_scope'] = copy.deepcopy(ui_scope)
                         return copy.deepcopy(self.records[existing])
             if len(self.active)>=32:raise BusyError('后台任务较多，请稍后重试。')
-            if any(task_scopes.conflicts(scope,s) for s in self.scopes.values()):
+            waiting = any(task_scopes.conflicts(scope,s) for s in self.scopes.values())
+            if waiting and request['action'] != 'classification-apply':
                 raise BusyError('相关 Skill 或目录正在操作，请等待该任务完成；其他项目仍可使用。')
             jid = maintenance.uid('job')
             self.records[jid] = {'id':jid, 'action':request['action'], 'state':'queued',
+                                 'field':request.get('field','both') if request['action']=='classification-apply' else None,
                                  'resources':scope['resources'],'write':scope['write'],
                                  'global':scope['global'],'catalog':scope['catalog'],'plan_id':request.get('id'),
                                  'operation':scope['operation'],
@@ -113,7 +122,7 @@ class Jobs:
                                  '_check_key':check_key,
                                  '_inventory_key':inventory_key,
                                  'created_at':maintenance.stamp(), 'completed':0, 'total':None,
-                                 'message':'正在处理', 'result':None}
+                                 'message':'等待其他任务完成' if waiting else '正在处理', 'result':None}
             self.active.add(jid)
             self.scopes[jid]=scope
             if request['action']=='check-many':self.latest_check=jid
@@ -128,14 +137,18 @@ class Jobs:
         final_state = 'failed'
         slot = None
         try:
-            scope=self.scopes[jid]
+            with self.scope_changed:
+                while any(task_scopes.conflicts(self.scopes[jid], s)
+                          for other, s in self.scopes.items() if other != jid):
+                    self.scope_changed.wait()
+                scope=self.scopes[jid]
             slot = (self.network_slots if scope['lane']=='network' else self.inventory_slots
                     if scope['lane']=='inventory' else self.commit_slot
                     if request['action'] in task_scopes.COMMITS else None)
             if slot:
                 self.update(jid,message='等待执行')
                 slot.acquire()
-            self.update(jid,state='running')
+            self.update(jid,state='running',message='正在处理')
             m = maintenance.Manager(self.legacy)
             m._use_check_cache = request['action'] in ('check','check-many')
             m._force_check = bool(request.get('force'))
@@ -185,4 +198,5 @@ class Jobs:
                     self.records[jid]['state'] = final_state
                     self.active.discard(jid)
                     self.scopes.pop(jid,None)
+                    self.scope_changed.notify_all()
                 if slot:slot.release()

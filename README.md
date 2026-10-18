@@ -17,12 +17,12 @@ The local Web UI is the main entry point. An Agent can also use the Python CLI. 
 | Capability | What you can do |
 | --- | --- |
 | Unified inventory | Browse grouped Skills and see their Agent associations, installation time, size, category and update status. Independent installation directories remain separate on disk. |
-| Home and discovery | See installed Skills, Agent coverage, available updates and disk use at a glance. Browse a Skill store with rankings, categories and search. The home page shows recent verified Skills; a daily recommendation board appears only when at least five eligible items are available. |
-| Update checks | Check all eligible installed Skills against their recorded sources. Successful results are reused for 15 minutes; failed requests can be retried, subject to provider rate limits. |
+| Home and discovery | See installed Skills, Agent coverage, available updates and disk use at a glance. Browse a paginated Skill store with rankings, categories and title search. The home page shows recent verified Skills; a daily recommendation board appears only when at least five eligible items are available. |
+| Update checks | Check all eligible installed Skills against their recorded sources. The UI distinguishes failed queries from sources found without a trusted comparison baseline. Successful results are reused for 15 minutes; failed requests can be retried, subject to provider rate limits. |
 | Installation | Install from supported public repository URLs, HTTPS ZIP links, a local folder or a local ZIP, then choose the Agent and installation location. |
 | Agent directories | Add supported Agent presets with OS-specific default paths, or register custom directories in Settings. |
-| Backup and recovery | Create and restore backups, move deleted backups and uninstalled Skills to the recycle bin, and permanently delete recycle-bin entries after confirmation. |
-| Categories and tags | Organize Skills with a basic category and tags, and filter or sort the list directly. |
+| Backup and recovery | Create and restore backups, scan configured locations for older backups, move deleted backups and uninstalled Skills to the recycle bin, and permanently delete recycle-bin entries after confirmation. Incomplete scans keep their error details visible without treating partial results as a complete inventory. |
+| Categories and tags | Automatically fill missing categories or tags, adjust them manually, and filter or sort the list directly. |
 | Local history | Inspect failed or interrupted operations and export diagnostic records when troubleshooting. |
 | Cache cleanup | Inspect and remove the manager's expired temporary files without touching installed Skills or backups. |
 
@@ -68,7 +68,7 @@ The page opens on your computer. The home page summarizes your installation and 
 Check all my installed Skills for updates and show which ones have newer versions.
 ```
 
-Checking does not install anything. Updates use the recorded source, and local content is backed up before replacement. Missing sources and failed checks are not treated as proof that a Skill is up to date.
+Checking does not install anything. Updates use the recorded source, and local content is backed up before replacement. Missing sources, failed checks and a missing trusted comparison baseline are not treated as proof that a Skill is up to date.
 
 ### Install a Skill
 
@@ -84,7 +84,7 @@ The manager identifies the content and installation location before writing file
 Back up my installed Skills so I can restore them later.
 ```
 
-Backups appear in **Backups**. Deleting a backup moves it to **Recycle Bin**; permanent deletion is available there. Destructive Web actions show a confirmation dialog. Restoring over different existing content requires a replacement choice and first creates a backup.
+Backups appear in **Backups**. A scan can find backups in configured locations; an incomplete scan reports uncovered locations and keeps the results provisional. Deleting a backup moves it to **Recycle Bin**; permanent deletion is available there. Destructive Web actions show a confirmation dialog. Restoring over different existing content requires a replacement choice and first creates a backup.
 
 ### Manage another Agent
 
@@ -100,7 +100,7 @@ Presets supply platform-appropriate default directories. Removing an Agent's man
 Show me recently added Skills for writing and documents.
 ```
 
-The store provides rankings, categories and search using public catalog data. Opening a listing shows its source; a catalog result is not automatically trusted as an update source for an installed Skill. Daily recommendations verify that a repository contains a usable `SKILL.md` and have a freshness rule; if fewer than five qualify, the home page shows new arrivals instead.
+The store provides rankings, categories and title search using public catalog data. Searches cover a bounded set of provider candidates, so a limited search is not a claim of exhaustive results. A catalog result is not automatically trusted as an update source for an installed Skill. Daily recommendations verify that a repository contains a usable `SKILL.md` and have a freshness rule; if fewer than five qualify, the home page shows new arrivals instead.
 
 ## How It Works
 

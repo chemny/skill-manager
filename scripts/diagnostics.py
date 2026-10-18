@@ -24,6 +24,8 @@ def redact(value):
 
 def classify(exc):
     s = str(exc).lower()
+    if getattr(exc, 'busy', False):
+        return 'busy', redact(exc)
     if 'remote git blob integrity mismatch' in s:
         return 'remote_integrity', '远端文件与固定提交的校验值不一致，已阻止使用；未修改本地 Skill。'
     if 'confirmed source path does not contain skill.md' in s:

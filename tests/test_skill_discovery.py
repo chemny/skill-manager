@@ -6,6 +6,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+import zipfile
 from unittest.mock import patch
 
 import test_maintenance as fixtures
@@ -48,9 +49,8 @@ class DiscoveryTests(unittest.TestCase):
             if '/categories' in url:
                 return {'items': [{'key': 'office-efficiency', 'name': '办公效率'}]}
             self.assertIn('category=office-efficiency', url)
-            self.assertIn('keyword=pdf', url)
             return {'code': 0, 'data': {'total': 80, 'skills': rows}}
-        payload = {'provider': 'skillhub', 'view': 'search', 'query': 'pdf', 'category': 'office-efficiency', 'page': 2}
+        payload = {'provider': 'skillhub', 'view': 'trending', 'category': 'office-efficiency', 'page': 2}
         with patch.object(d, 'remote_json', side_effect=remote) as get:
             result = d.refresh(self.m, payload)
             self.assertEqual(len(result['items']), 2)
@@ -61,6 +61,119 @@ class DiscoveryTests(unittest.TestCase):
             d.refresh(self.m, payload)
             self.assertEqual(get.call_count, 2)
             self.assertEqual(d.cached(self.m, dict(payload, page=1))['items'], [])
+
+    def test_all_catalog_pages_and_clawhub_cursor(self):
+        calls = []
+        def remote(url, provider):
+            calls.append(url)
+            if provider == 'skillhub':
+                if '/categories' in url:
+                    return {'items': [{'key': 'office-efficiency', 'name': '办公效率'}]}
+                page = 2 if 'page=2&' in url else 1
+                return {'code': 0, 'data': {'total': 61, 'skills': [
+                    {'slug': str(page), 'name': 'Page ' + str(page), 'homepage': 'https://api.skillhub.cn/example/' + str(page)}]}}
+            return {'items': [claw(slug='page-2' if 'cursor=next-page' in url else 'page-1')],
+                    'nextCursor': None if 'cursor=next-page' in url else 'next-page'}
+        with patch.object(d, 'remote_json', side_effect=remote):
+            first = d.refresh(self.m, {'provider': 'skillhub', 'view': 'all', 'page': 1})
+            second = d.refresh(self.m, {'provider': 'skillhub', 'view': 'all', 'page': 2})
+            claw_first = d.refresh(self.m, {'provider': 'clawhub', 'view': 'all', 'page': 1})
+            claw_second = d.refresh(self.m, {'provider': 'clawhub', 'view': 'all', 'page': 2})
+        self.assertEqual(first['total'], 61)
+        self.assertEqual([i['name'] for i in second['items']], ['Page 2'])
+        self.assertEqual(first['categories'][0]['name'], '办公效率')
+        self.assertTrue(claw_first['has_more'])
+        self.assertFalse(claw_second['has_more'])
+        self.assertEqual([i['slug'] for i in claw_second['items']], ['page-2'])
+        self.assertTrue(any('cursor=next-page' in url for url in calls))
+        self.assertEqual(d.cached(self.m, {'provider': 'clawhub', 'view': 'all', 'page': 1})['items'][0]['slug'], 'page-1')
+
+    def test_catalog_supports_pages_beyond_first_thousand(self):
+        self.assertEqual(d.selection({'provider':'skillhub','view':'all','page':1001}),('skillhub','',1001))
+
+    def test_skillhub_installed_status_uses_exact_slug_not_name(self):
+        row=self.row('a')
+        self.m.db.execute('insert or replace into maintenance_items(id,source) values (?,?)',
+                          (row['id'],json.dumps({'provider':'skillhub','slug':'exact-skill'})))
+        self.m.db.execute('insert into discovery_cache(cache_key,provider,fetched_at,attempted_at,payload) values (?,?,?,?,?)',
+                          (d.request_key('skillhub','all','',{'provider':'skillhub','view':'all','page':1}),
+                           'skillhub',time.time(),time.time(),json.dumps({'items':[
+                               {'id':'same','provider':'skillhub','slug':'exact-skill','name':'different name','github_url':'','url':'https://api.skillhub.cn/a/exact-skill'},
+                               {'id':'other','provider':'skillhub','slug':'a','name':'a','github_url':'','url':'https://api.skillhub.cn/b/a'}],
+                               'total':2,'categories':[]})))
+        items=d.cached(self.m,{'provider':'skillhub','view':'all','page':1})['items']
+        self.assertEqual(items[0]['installed'],'source_match')
+        self.assertEqual(items[1]['installed'],'name_only')
+
+    def test_clawhub_download_uses_bounded_zip_installer(self):
+        with patch.object(self.a,'download_zip_archive',return_value=self.roots) as download:
+            root,source=self.a.install_source_from_url('https://clawhub.ai/api/v1/download?slug=demo',self.base)
+        self.assertEqual(root,self.roots)
+        self.assertEqual(source['source_type'],'clawhub')
+        self.assertEqual(source['slug'],'demo')
+        download.assert_called_once_with('https://clawhub.ai/api/v1/download?slug=demo',self.base)
+        with self.assertRaises(ValueError):
+            self.a.install_source_from_url('https://clawhub.ai/api/v1/download?slug=demo&other=1',self.base)
+        with patch.object(self.a,'download_zip_archive',side_effect=zipfile.BadZipFile):
+            with self.assertRaisesRegex(ValueError,'未提供可安装'):
+                self.a.install_source_from_url('https://clawhub.ai/api/v1/download?slug=demo',self.base)
+
+    def test_search_filters_description_matches_and_sorts_titles_across_source_pages(self):
+        names = ['guide ' + str(i) for i in range(30)] + ['my-pdf-tool', 'pdf', 'tool-pdf', 'pdf-reader']
+        def remote(url, provider):
+            if '/categories' in url:
+                return {'items': []}
+            page = 1 if 'page=1&' in url else 2
+            batch = names[:30] if page == 1 else names[30:]
+            return {'code': 0, 'data': {'total': len(names), 'skills': [
+                {'slug': str(index), 'name': name, 'homepage': 'https://api.skillhub.cn/example/' + str(index),
+                 'description_zh': 'PDF document tool'}
+                for index, name in enumerate(batch, 0 if page == 1 else 30)]}}
+        payload = {'provider': 'skillhub', 'view': 'search', 'query': 'PDF'}
+        with patch.object(d, 'remote_json', side_effect=remote) as get:
+            result = d.refresh(self.m, payload)
+        self.assertEqual([item['name'] for item in result['items']], ['pdf', 'pdf-reader', 'my-pdf-tool', 'tool-pdf'])
+        self.assertEqual(result['total'], 4)
+        self.assertFalse(result['search_limited'])
+        self.assertEqual(get.call_count, 3)
+        self.assertEqual(d.cached(self.m, dict(payload, page=2))['items'], [])
+
+    def test_search_reports_when_candidate_limit_may_hide_titles(self):
+        def remote(url, provider):
+            if '/categories' in url:
+                return {'items': []}
+            return {'code': 0, 'data': {'total': 500, 'skills': [
+                {'slug': 'candidate-' + str(i), 'name': 'other-' + str(i),
+                 'homepage': 'https://api.skillhub.cn/example/' + str(i)} for i in range(30)]}}
+        with patch.object(d, 'remote_json', side_effect=remote) as get:
+            result = d.refresh(self.m, {'provider': 'skillhub', 'view': 'search', 'query': 'pdf'})
+        self.assertEqual(result['items'], [])
+        self.assertTrue(result['search_limited'])
+        self.assertEqual(get.call_count, d.SEARCH_CANDIDATE_PAGES + 1)
+
+    def test_search_paginates_after_ranking_and_filters_other_providers(self):
+        names = ['pdf-' + str(i) for i in range(31)] + ['other-pdf']
+        def remote(url, provider):
+            if '/categories' in url:
+                return {'items': []}
+            page = 1 if 'page=1&' in url else 2
+            batch = names[:30] if page == 1 else names[30:]
+            return {'code': 0, 'data': {'total': len(names), 'skills': [
+                {'slug': name, 'name': name, 'homepage': 'https://api.skillhub.cn/example/' + name}
+                for name in batch]}}
+        payload = {'provider': 'skillhub', 'view': 'search', 'query': 'pdf'}
+        with patch.object(d, 'remote_json', side_effect=remote):
+            first = d.refresh(self.m, payload)
+        second = d.cached(self.m, dict(payload, page=2))
+        self.assertEqual(first['total'], 32)
+        self.assertEqual(len(first['items']), 30)
+        self.assertEqual([item['name'] for item in second['items']], ['pdf-9', 'other-pdf'])
+
+        rows = [dict(claw(slug='unrelated'), summary='pdf utility'), claw(slug='pdf-reader'), claw(slug='helper-pdf')]
+        with patch.object(d, 'remote_json', return_value={'items': rows}):
+            other = d.refresh(self.m, {'provider': 'clawhub', 'view': 'search', 'query': 'pdf'})
+        self.assertEqual([item['name'] for item in other['items']], ['pdf-reader', 'helper-pdf'])
+        self.assertEqual(other['total'], 2)
 
     def test_discovery_rejects_unsupported_combinations(self):
         for payload in ({'provider': 'skillhub', 'view': 'new'}, {'provider': 'skillsmp', 'view': 'trending'},
@@ -97,6 +210,20 @@ class DiscoveryTests(unittest.TestCase):
         result = self.populate()
         self.assertEqual(len(result['items']), 2)
         self.assertEqual(len({i['id'] for i in result['items']}), 2)
+
+    def test_only_verified_same_git_location_is_grouped(self):
+        url = 'https://github.com/example/skills/tree/' + 'a' * 40 + '/skills/demo'
+        items = [
+            {'id': 'one', 'provider': 'clawhub', 'name': 'demo', 'url': 'https://clawhub.ai/a/demo',
+             'verification_fresh': True, 'verification': {'install_url': url}},
+            {'id': 'two', 'provider': 'skillsmp', 'name': 'demo', 'url': 'https://skillsmp.com/a/demo',
+             'verification_fresh': True, 'verification': {'install_url': url}},
+            {'id': 'three', 'provider': 'skillsmp', 'name': 'demo', 'url': 'https://skillsmp.com/b/demo',
+             'verification_fresh': False, 'verification': {'install_url': url}},
+        ]
+        grouped = d.group_verified_copies(items)
+        self.assertEqual([item['id'] for item in grouped], ['one', 'three'])
+        self.assertEqual(grouped[0]['alternatives'][0]['id'], 'two')
 
     def test_claw_owner_is_part_of_identity(self):
         items = d.normalize('clawhub', {'items': [claw('a'), claw('b'), claw('a')]})

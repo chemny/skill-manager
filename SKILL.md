@@ -2,8 +2,7 @@
 name: skill-manager
 description: Manage locally installed agent skills across Codex, Claude Code, Hermes and configured roots. Use when users need inventory, source-bound update checks, safe updates, cleanup, history, backup verification or recovery.
 metadata:
-  version: "1.3.0"
-  local_updated_at: "2026-10-08"
+  version: "1.4.0"
 ---
 
 # Agent Skill Manager

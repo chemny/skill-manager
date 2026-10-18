@@ -400,7 +400,6 @@ def snapshot(manager, source, commit, folder, local, use_git=False):
     api=f"https://api.github.com/repos/{info['owner']}/{info['repo']}"
     from github_transport import can_fallback
     source={**source,'_local_name':local.name}
-    key=source['url']+'@'+commit+':'+relative(source.get('path') or '')+':'+local.name
     transport='git-selected' if use_git else 'github-tree'
     def fallback(exc):
         from diagnostics import classify
@@ -408,13 +407,31 @@ def snapshot(manager, source, commit, folder, local, use_git=False):
             from update_checks import rate_limit_deadline
             state=getattr(manager,'_github_api_state',None)
             if state is not None: state.update(limited=True,retry_at=rate_limit_deadline(exc))
+    def entries_for(selected):
+        nonlocal use_git, transport
+        selected_key=selected['url']+'@'+commit+':'+relative(selected.get('path') or '')+':'+local.name
+        try:
+            return pinned_entries(selected_key,lambda:git_entries(manager,selected,commit,folder) if use_git else api_entries(manager,selected,commit))
+        except Exception as exc:
+            if use_git or not can_fallback(exc): raise
+            fallback(exc)
+            transport='git-selected';use_git=True
+            return pinned_entries(selected_key,lambda:git_entries(manager,selected,commit,folder))
+    relocated_path=''
     try:
-        entries=pinned_entries(key,lambda:git_entries(manager,source,commit,folder) if use_git else api_entries(manager,source,commit))
-    except Exception as exc:
-        if use_git or not can_fallback(exc): raise
-        fallback(exc)
-        transport='git-selected';use_git=True
-        entries=pinned_entries(key,lambda:git_entries(manager,source,commit,folder))
+        entries=entries_for(source)
+    except SourcePathError as error:
+        candidates=error.source_issue['candidate_paths']
+        old=relative(source.get('path') or '')
+        if (source.get('evidence')=='user-confirmed' or len(candidates)!=1
+                or (old and Path(old).name!=local.name) or Path(candidates[0]).name!=local.name):
+            raise
+        relocated_path=relative(candidates[0])
+        entries=entries_for({**source,'path':relocated_path})
+        trusted=source.get('evidence')=='verified-package' and bool(old)
+        skill_entry=next((entry for entry in entries if entry['path']=='SKILL.md'),None)
+        if not trusted and (not skill_entry or local_blob(local,skill_entry) is None):
+            raise error
     validate_entries(entries)
     target=folder/'selected-skill';target.mkdir()
     downloaded=reused=total=0
@@ -459,5 +476,10 @@ def snapshot(manager, source, commit, folder, local, use_git=False):
         if total>MAX_BYTES or downloaded>MAX_TRANSFER: raise ValueError('Remote response exceeds size limit')
         destination=target/path;destination.parent.mkdir(parents=True,exist_ok=True)
         destination.write_bytes(body);destination.chmod(0o755 if entry['mode']=='100755' else 0o644)
+    if relocated_path:
+        metadata=manager.a.parse_frontmatter(target/'SKILL.md')
+        if str(metadata.get('name') or '').casefold()!=local.name.casefold():
+            raise SourcePathError(old,[relocated_path])
     return target,{'comparison_transport':transport,'file_count':len(entries),
-                   'reused_local_files':reused,'selected_file_bytes':downloaded,'snapshot_bytes':total}
+                   'reused_local_files':reused,'selected_file_bytes':downloaded,'snapshot_bytes':total,
+                   **({'relocated_path':relocated_path} if relocated_path else {})}

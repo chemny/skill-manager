@@ -13,7 +13,7 @@ def can_fallback(error):
 def lookup(url, patterns):
     from github_subset import git_request
     with tempfile.TemporaryDirectory(prefix='asm-ref-') as folder:
-        return git_request(folder,['ls-remote','--symref','--exit-code',url,*patterns],budget=12,limit=1_000_000).decode('utf-8')
+        return git_request(folder,['ls-remote','--symref','--exit-code',url,*patterns],budget=30,limit=1_000_000).decode('utf-8')
 
 
 def resolve(manager, source):

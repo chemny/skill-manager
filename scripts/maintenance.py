@@ -193,6 +193,44 @@ def fingerprint(m):
 def comparison_fingerprint(files):
     return fingerprint({k:v for k,v in files.items() if k != '.git' and not k.startswith('.git/')})
 
+def duplicate_content_fingerprints(items, saved_items=None, lightweight=False):
+    """Identify identical installed copies without hashing every Skill in the list."""
+    by_name = {}
+    by_real = {}
+    for item in items:
+        if item['kind'] == 'skill' and item['present'] and item['health'] == 'ok':
+            by_name.setdefault(item['name'].casefold(), {})[item['real_path']] = item
+            by_real.setdefault(item['real_path'], []).append(item)
+    for copies in by_name.values():
+        if len(copies) < 2:
+            continue
+        by_skill_file = {}
+        for real, item in copies.items():
+            path = Path(real)
+            if item.get('target_space', {}).get('bytes', 0) > 16_000_000:
+                continue
+            try:
+                skill_file = path / 'SKILL.md'
+                if not skill_file.is_file() or skill_file.stat().st_size > 1_000_000:
+                    continue
+                by_skill_file.setdefault(digest_file(skill_file), []).append(item)
+            except OSError:
+                continue
+        for candidates in by_skill_file.values():
+            if len(candidates) < 2:
+                continue
+            for item in candidates:
+                saved = (saved_items or {}).get(item['id'], {})
+                if lightweight and saved.get('real_path') == item['real_path'] and saved.get('content_fingerprint'):
+                    item['content_fingerprint'] = saved['content_fingerprint']
+                else:
+                    try:
+                        item['content_fingerprint'] = comparison_fingerprint(manifest(item['real_path'], ignore_git=True))
+                    except (OSError, ValueError):
+                        continue
+                for reference in by_real[item['real_path']]:
+                    reference['content_fingerprint'] = item['content_fingerprint']
+
 def copy_path(source, destination):
     if source.is_symlink():
         destination.symlink_to(os.readlink(source), target_is_directory=source.is_dir())
@@ -729,6 +767,7 @@ class Manager:
         for entry in result:
             entry.setdefault('known_agents', [])
             entry.setdefault('shared', False)
+        duplicate_content_fingerprints(result, saved_items, lightweight)
         from check_results import reconcile
         reconcile(result)
         last_scan = self.db.execute('select payload from maintenance_scans order by rowid desc limit 1').fetchone()
@@ -769,8 +808,8 @@ class Manager:
                 from recovery import stored_space
                 cached['space'].update(stored_space(self))
                 cached['cache']['generated_at'] = stamp()
-                self.db.execute('update maintenance_inventory_cache set payload=? where id=1 and generation=?',
-                                (json.dumps(cached, ensure_ascii=False), generation))
+                self.db.execute('update maintenance_inventory_cache set payload=?,payload_generation=? where id=1 and generation=?',
+                                (json.dumps(cached, ensure_ascii=False),generation,generation))
                 self.db.commit()
             return payload
         # Never publish a snapshot assembled across a concurrent state change.
@@ -1181,6 +1220,31 @@ class Manager:
                     checked.update(assess(current,remote,base,local_version,remote_version,self.a.version_gt),
                                    source=source, differences=delta, local_version=local_version,
                                    remote_version=remote_version, local_fingerprint=fingerprint(current))
+                    relocated=source.get('relocated_path')
+                    if relocated:
+                        from check_results import source_key
+                        original=self.source(row)
+                        corrected={**original,'path':relocated,'evidence':'verified-relocation',
+                                   'relocated_from':original['path']}
+                        real=str(Path(row['path']).resolve())
+                        references=getattr(self,'_check_references',None)
+                        candidates=(references.get(real,[]) if references is not None
+                                    else self.r.all_capabilities())
+                        changes=[]
+                        for candidate in candidates:
+                            if str(Path(candidate['path']).resolve())!=real: continue
+                            binding=self.source(candidate)
+                            if not binding or binding.get('evidence')=='user-confirmed' or source_key(binding)!=source_key(original): continue
+                            self.state(candidate)
+                            changes.append((json.dumps(corrected),candidate['id']))
+                            if getattr(self,'_source_context',None) is not None:
+                                self._source_context['sources'][candidate['id']]=corrected
+                        if changes:
+                            self.db.executemany('update maintenance_items set source=? where id=?',changes)
+                            self.db.commit()
+                            self.invalidate_cache()
+                        checked['source']={**source,'path':relocated}
+                        checked['source_correction']=relocated
             except Exception as exc:
                 from diagnostics import record
                 event = record(self.home, exc, 'check')
@@ -2042,7 +2106,7 @@ def dispatch(m, payload):
     if action in web_execution.ACTIONS: return web_execution.dispatch(m, payload)
     if action in ('classification-preview','classification-apply','classification-undo'):
         import classification
-        return classification.undo(m,payload['id']) if action=='classification-undo' else classification.batch(m,apply=action=='classification-apply')
+        return classification.undo(m,payload['id']) if action=='classification-undo' else classification.batch(m,apply=action=='classification-apply',field=payload.get('field','both'))
     if action in ('source-search-policy','source-search-policy-update','discover-sources-batch'):
         import source_search
         if action=='discover-sources-batch': return source_search.batch(m,payload.get('limit',10))

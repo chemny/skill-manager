@@ -70,6 +70,32 @@ class UpdateProviderTests(unittest.TestCase):
         self.assertEqual(len(found['candidates']), 1)
         self.assertIsNone(self.m.source(self.row('a')))
 
+    def test_channel_capabilities_and_local_connection(self):
+        channels={c['name']:c for c in self.m.r.update_channels()}
+        self.assertTrue(channels['skillhub']['search_supported'])
+        self.assertTrue(channels['skillsmp']['search_supported'])
+        self.assertTrue(channels['gitlab']['search_supported'])
+        self.assertTrue(channels['gitcode']['test_supported'])
+        self.assertFalse(channels['gitcode']['search_supported'])
+        self.assertNotIn('find-skills', channels)
+        self.assertFalse(self.m.r.channel_enabled('find-skills'))
+        self.assertFalse(channels['local']['search_supported'])
+        self.assertIn('无需网络',providers.test_connection(self.a,'local')['message'])
+        self.assertEqual(next(c for c in self.m.r.update_channels() if c['name']=='local')['last_test_outcome'],'success')
+
+    def test_gitlab_connection_checks_search_endpoint(self):
+        with patch.object(providers, 'api_json', return_value=[{'name':'agent-skills'}]) as api:
+            result = providers.test_connection(self.a, 'gitlab')
+        self.assertIn('搜索可用', result['message'])
+        self.assertIn('/api/v4/projects?', api.call_args.args[1])
+
+    def test_repository_connection_failure_is_recorded(self):
+        with patch.object(providers.urllib.request,'urlopen',side_effect=TimeoutError('offline')):
+            with self.assertRaises(TimeoutError): providers.test_connection(self.a,'gitcode')
+        channel=next(c for c in self.m.r.update_channels() if c['name']=='gitcode')
+        self.assertEqual(channel['last_test_outcome'],'failure')
+        self.assertFalse(channel['search_supported'])
+
     def test_traversal_and_symlinks_rejected(self):
         src = providers.source(self.a, 'https://api.skillhub.cn/api/v1/skills/a')
         for filename in ('../outside', '/outside'):

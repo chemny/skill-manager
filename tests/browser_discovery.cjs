@@ -51,7 +51,7 @@ def remote(url,provider):
  if provider=='skillsmp':
   if 'broken' in url:raise TimeoutError('fixture')
   return {'success':True,'data':{'skills':[skillsmp()]}}
- return {'items':[claw()]}
+ return {'items':[claw(slug='broken' if 'broken' in url else 'demo')]}
 d.remote_json=remote
 try:x.a.web_command(argparse.Namespace(host='127.0.0.1',port=0,open=False))
 finally:x.tearDown()
@@ -65,6 +65,8 @@ async function main(){
  page.on('request',r=>{if(r.url().endsWith('/api/maintenance'))requests.push(r.postDataJSON());});
  await page.goto(url+'/manage');await page.waitForFunction(expected=>inventoryReady&&(expected===0||inventory.length===expected),process.argv.includes('--preview')?0:2);
  await page.waitForFunction(()=>activeTab==='home'&&homeBoardLoading.size===0&&!homeSceneLoading);
+ const localCopies=await page.evaluate(()=>{const original=inventory;try{inventory=original.map(i=>({...i,name:'same-skill',content_fingerprint:'matching-content'}));invalidateSkillGroups();return groupSkills().map(i=>i._members.length);}finally{inventory=original;invalidateSkillGroups();}});
+ assert.deepEqual(localCopies,[2]);report.identicalLocalCopiesGrouped=true;
  if(process.argv.includes('--preview')){
   await page.waitForFunction(()=>document.querySelectorAll('#homeNew li').length>=5&&document.querySelectorAll('#homeTrending li').length>=5&&document.querySelectorAll('#homeSceneItems .home-scene-item').length>=8);
   await page.setViewportSize({width:1920,height:1080});
@@ -143,7 +145,7 @@ async function main(){
  assert.equal(await page.locator('#discoveryCategory').inputValue(),'content-creation');
  assert.ok(!(await page.locator('#discoveryRows').innerText()).includes('腾讯 SkillHub'));
  assert.equal(await page.locator('#discoveryRows tr').first().locator('td').nth(2).innerText(),'—');
- assert.equal(await page.locator('#discoveryRows .discovery-actions a').innerText(),'查看详情');
+ assert.equal(await page.locator('#discoveryRows [data-discovery-detail]').last().innerText(),'查看详情');
  await page.locator('.sidebar [data-tab="home"]').click();await page.waitForFunction(()=>!homeSceneLoading&&homeBoardLoading.size===0);
  await page.locator('[data-home-scene="research"]').click();await page.waitForFunction(()=>!homeSceneLoading);
  assert.ok((await page.locator('#homeSceneStatus').innerText()).includes('加载'));
@@ -196,10 +198,28 @@ async function main(){
  await page.locator('.sidebar [data-tab="discovery"]').click();
  await page.waitForFunction(()=>!discoveryLoading);
  assert.equal(await page.locator('#discoveryRows tr').count(),1);
+ assert.equal(await page.locator('#discoveryCount').textContent(),'61');
+ assert.match(await page.locator('#discovery .library-summary').innerText(),/61个 Skills/);
+ assert.ok(!(await page.locator('#discovery .library-summary').innerText()).includes('来源共'));
+ assert.equal(await page.locator('#discoveryProvider').isVisible(),false);
+ assert.equal(await page.locator('#discoveryRefresh,#discoveryHideInstalled').count(),0);
  assert.equal(await page.locator('#discoveryBasis').isVisible(),false);
  assert.equal(await page.locator('#discoveryStatus').isVisible(),false);
  assert.ok(!(await page.locator('#discovery').innerText()).includes('已缓存'));
  const count=requests.filter(r=>r.request?.action==='discovery-refresh').length;
+ report.titleSearch=await page.evaluate(()=>{
+  const candidates=['helper-code','my-code-tool','code-review','code','unrelated'].map((name,id)=>({name,id:String(id)}));
+  const ordered=searchRows(candidates,' CODE ','skills').map(item=>item.name);
+  el('filter').value='one';
+  const descriptionOnly=filtered().length;
+  el('filter').value='a';
+  const visible=filtered().map(item=>item.name);
+  el('filter').value='';
+  return {ordered,descriptionOnly,visible};
+ });
+ assert.deepEqual(report.titleSearch.ordered,['code','code-review','my-code-tool','helper-code']);
+ assert.equal(report.titleSearch.descriptionOnly,0);
+ assert.deepEqual(report.titleSearch.visible,['a']);
  await page.locator('.sidebar [data-tab="skills"]').click();await page.locator('.sidebar [data-tab="discovery"]').click();
  await page.waitForFunction(()=>!discoveryLoading);
  report.noJobOnFreshReentry=requests.filter(r=>r.request?.action==='discovery-refresh').length===count;assert.ok(report.noJobOnFreshReentry);
@@ -213,33 +233,44 @@ async function main(){
  await page.screenshot({path:output.replace(/\.json$/, '-ranking.png'),fullPage:true});
  await page.locator('[data-discovery-view="new"]').click();await page.waitForFunction(()=>!discoveryLoading);
  assert.ok(!(await page.locator('#discovery').innerText()).includes('按首次发布时间排序'));
- await page.locator('[data-discovery-view="search"]').click();
- await page.locator('#discoveryProvider').selectOption('skillsmp');
- await page.locator('#discoveryQuery').fill('pdf');await page.locator('#discoveryQuery').press('Enter');
- await page.waitForFunction(()=>!discoveryLoading&&discoveryData.items.length===1);
- report.searchRows=await page.locator('#discoveryRows tr').count();assert.equal(report.searchRows,1);
- await page.locator('#discoveryHideInstalled').check();report.hiddenExactInstallation=(await page.locator('#discoveryRows').innerText()).includes('没有符合');assert.ok(report.hiddenExactInstallation);
- await page.locator('#discoveryHideInstalled').uncheck();
- await page.locator('[data-discovery-verify]').click();
- await page.waitForFunction(()=>document.querySelector('[data-discovery-install]'));
- await page.locator('#discoveryRows details summary').click();
- report.remoteContentEscaped=!(await page.evaluate(()=>window.injected||document.querySelector('#discoveryRows pre img')));assert.ok(report.remoteContentEscaped);
+ await page.locator('[data-discovery-view="all"]').click();await page.waitForFunction(()=>!discoveryLoading);
+ assert.equal(await page.locator('[data-discovery-view="all"]').getAttribute('aria-pressed'),'true');
+ assert.equal(await page.locator('#discoveryCount').textContent(),'61');
+ assert.match(await page.locator('#discoveryPageInfo').innerText(),/1 \/ 3/);
+ await page.locator('#discoveryQuery').fill('demo');await page.locator('#discoveryQuery').press('Enter');
+ await page.waitForFunction(()=>!discoveryLoading);
+ assert.equal(await page.locator('[data-discovery-view="all"]').getAttribute('aria-pressed'),'true');
+ report.searchRows=await page.locator('#discoveryRows tr').count();assert.ok(report.searchRows>=1);
+ const previousCategory=await page.evaluate(()=>{const old=discoveryData.items[0].category;discoveryData.items[0].category='';renderDiscovery();return old;});
+ assert.match(await page.locator('#discoveryRows tr').first().innerText(),/其他/);
+ await page.evaluate(category=>{discoveryData.items[0].category=category;renderDiscovery();},previousCategory);
+ await page.locator('#discoveryRows [data-discovery-detail]').last().click();
+ assert.match(await page.locator('#resultDialog').innerText(),/整理 PDF 文档/);
+ assert.equal(await page.locator('#resultDialog [data-discovery-detail-install]').count(),1);
+ await page.locator('#closeResult').click();
+ await page.evaluate(()=>{discoveryData.items[0].installed='source_match';renderDiscovery();});
+ assert.equal(await page.locator('#discoveryRows button:disabled').last().innerText(),'已安装');
+ await page.evaluate(()=>{discoveryData.items[0].installed='unknown';renderDiscovery();});
+ report.detailAndInstalledState=true;
  await page.screenshot({path:output.replace(/\.json$/, '-desktop.png'),fullPage:true});
  const installationRequests=requests.length;
- await page.locator('[data-discovery-install]').click();
- await page.waitForFunction(()=>activeTab==='install'&&el('installUrl').value.includes('/tree/'+'a'.repeat(40)+'/skills/demo'));
- report.pinnedInstallUrl=await page.locator('#installUrl').inputValue();assert.ok(report.pinnedInstallUrl.includes('/tree/'+'a'.repeat(40)+'/skills/demo'));
+ await page.locator('[data-discovery-install]').first().click();
+ await page.waitForFunction(()=>activeTab==='install'&&el('installUrl').value==='https://api.skillhub.cn/api/v1/skills/demo');
+ report.installUrl=await page.locator('#installUrl').inputValue();
+ assert.equal(await page.locator('#installTarget').inputValue(),'');
+ assert.equal(await page.locator('#identifyInstall').isDisabled(),true);
  report.noAutomaticInstall=!requests.slice(installationRequests).some(r=>['execute','install-identify'].includes(r.request?.action));assert.ok(report.noAutomaticInstall);
  await page.locator('.sidebar [data-tab="discovery"]').click();await page.waitForFunction(()=>!discoveryLoading);
- await page.locator('#discoveryQuery').fill('broken');await page.locator('#discoveryQuery').press('Enter');
- await page.waitForFunction(()=>!discoveryLoading&&discoveryData.query==='broken');
- report.partialFailureVisible=(await page.locator('#discoveryStatus').innerText()).includes('连接失败');assert.ok(report.partialFailureVisible);
- await page.locator('#discoveryProvider').selectOption('clawhub');await page.waitForFunction(()=>!discoveryLoading&&discoveryData.items.length===1);
- report.otherProviderStillVisible=await page.locator('#discoveryRows tr').count()===1;assert.ok(report.otherProviderStillVisible);
+ await page.locator('[data-discovery-view="new"]').click();await page.waitForFunction(()=>!discoveryLoading&&discoveryData.items.length===1);
+ assert.equal(await page.locator('#discoveryCategory').isVisible(),false);
+ await page.locator('[data-discovery-install]').click();
+ await page.waitForFunction(()=>activeTab==='install'&&el('installUrl').value==='https://clawhub.ai/api/v1/download?slug=demo');
+ report.newArrivalInstallUrl=await page.locator('#installUrl').inputValue();
+ await page.locator('.sidebar [data-tab="discovery"]').click();await page.waitForFunction(()=>!discoveryLoading);
  await page.setViewportSize({width:390,height:844});
  await page.screenshot({path:output.replace(/\.json$/, '-mobile.png'),fullPage:true});
  report.mobilePageFits=await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth);assert.ok(report.mobilePageFits);
- report.mobileTableScrollable=await page.evaluate(()=>{const t=document.querySelector('#discovery .tablewrap');return t.scrollWidth>t.clientWidth;});assert.ok(report.mobileTableScrollable);
+ report.mobileActionsVisible=await page.locator('#discoveryRows tr').first().evaluate(row=>{const wrap=document.querySelector('#discovery .tablewrap'),button=row.querySelector('[data-discovery-install]'),bounds=button.getBoundingClientRect();return wrap.scrollWidth<=wrap.clientWidth&&bounds.left>=0&&bounds.right<=innerWidth;});assert.ok(report.mobileActionsVisible);
  report.desktopAndMobileScreenshots=true;
  report.errors=errors;assert.deepEqual(errors,[]);
  fs.writeFileSync(output,JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify(report));

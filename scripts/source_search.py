@@ -64,6 +64,12 @@ def query_channel(m, channel, query):
         if not isinstance(data.get('items'),list): raise ValueError('GitHub 返回格式不兼容')
         return [{'source':src,'evidence':'remote-search','from_path':'GitHub 仓库搜索（未核对内容）'}
                 for item in data['items'] if (src:=repository(m.a,item.get('html_url',''),evidence='remote-search'))]
+    if channel['name']=='gitlab':
+        data=providers.api_json(channel,'/api/v4/projects?'+urlencode({'search':query,'per_page':10}))
+        if not isinstance(data,list): raise ValueError('GitLab 返回格式不兼容')
+        return [{'source':src,'name':item.get('name') or '', 'evidence':'remote-search',
+                 'from_path':'GitLab 公开仓库（Skill 子目录待核对）'} for item in data if isinstance(item,dict)
+                if (src:=repository(m.a,item.get('web_url',''),evidence='remote-search'))]
     if kind=='skills-sh':
         data=providers.api_json(channel,'/api/search?'+urlencode({'q':query,'limit':10}))
         if not isinstance(data.get('skills'),list): raise ValueError('skills.sh 返回格式不兼容')
@@ -85,15 +91,23 @@ def query_channel(m, channel, query):
         return [{'source':src,'name':item.get('name') or item['slug'],'version':item.get('version'),
                  'evidence':'remote-search','from_path':channel['label']+'（未核对内容）'} for item in skills
                 if (src:=providers.source(m.a,channel['base_url']+'/api/v1/skills/'+str(item.get('slug','')),evidence='remote-search'))]
+    if channel['name']=='skillsmp':
+        data=providers.api_json(channel,'/api/v1/skills/search?'+urlencode({'q':query,'limit':10,'sortBy':'recent'}))
+        skills=(data.get('data') or {}).get('skills')
+        if not isinstance(skills,list): raise ValueError('SkillsMP 返回格式不兼容')
+        return [{'source':src,'name':item.get('name') or '', 'evidence':'remote-search',
+                 'from_path':'SkillsMP（目录待核对）'} for item in skills if isinstance(item,dict)
+                if (src:=repository(m.a,item.get('githubUrl') or item.get('github_url') or '',evidence='remote-search'))]
     raise NotImplementedError('尚未验证公开检索接口')
 
 
 def search(m, query, channel_name=None):
+    from update_providers import capabilities
     query=str(query or '').strip()[:200]
     if not query: raise ValueError('请输入关键词')
     config=policy(m)
     channels=m.r.update_channels()
-    ranks={'github':0,'skills-sh':1,'git':2,'skillhub':3}
+    ranks={'github':0,'skills-sh':1,'git':2,'skillhub':3,'discovery':4}
     channels.sort(key=lambda c:(0 if config['mode']=='domestic-first' and c['name']=='skillhub' else ranks.get(c['kind'],ranks.get(c['name'],9))+1,-c['priority'],c['name']))
     result,trace=[],[]
     deadline=time.monotonic()+config['budget_seconds']
@@ -105,7 +119,9 @@ def search(m, query, channel_name=None):
         cache_query=json.dumps([query,channel['kind'],channel['base_url']])
         if not channel['enabled']:
             trace.append({'channel':name,'status':'disabled'});continue
-        if channel['kind'] not in ('skills-sh','git','skillhub') and name!='github':
+        if channel_name and channel['kind']!='git' and not capabilities(channel)['search_supported']:
+            trace.append({'channel':name,'status':'unsupported','reason':capabilities(channel)['capability_note']});continue
+        if (name in ('skillsmp','gitlab') and not channel_name) or (channel['kind'] not in ('skills-sh','git','skillhub') and name not in ('github','skillsmp','gitlab')):
             trace.append({'channel':name,'status':'unsupported','reason':'未接入可靠的公开检索接口'});continue
         cached=m.db.execute('select * from source_search_cache where channel=? and query=? and expires>?',(name,cache_query,time.time())).fetchone()
         if cached:

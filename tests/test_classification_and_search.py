@@ -36,10 +36,65 @@ class ClassificationSearchTests(unittest.TestCase):
         out=classification.classify(self.m,self.row('a'),True)
         self.assertTrue(out['manual_preserved'])
 
-    def test_unknown_purpose_stays_review(self):
-        out=classification.infer(self.m,self.row('a'))
-        self.assertEqual(out['confidence'],'review')
-        self.assertEqual(out['category'],'')
+    def test_auto_category_fills_legacy_empty_category_without_changing_tags(self):
+        folder=self.skill('video-editor','Video editing using FFmpeg.');self.m.scan()
+        self.m.db.execute('insert into maintenance_labels values (?,?,?)',(str(folder),'','["写作"]'))
+        before=(folder/'SKILL.md').read_bytes()
+        result=classification.batch(self.m,True,field='category')
+        labels,_=classification.existing(self.m,str(folder))
+        self.assertEqual(labels,{'category':'设计与多媒体','tags':['写作']})
+        self.assertEqual((folder/'SKILL.md').read_bytes(),before)
+        self.assertGreaterEqual(result['changed'],1)
+
+    def test_auto_tags_fill_only_missing_tags_and_keep_category(self):
+        folder=self.skill('video-editor','Video editing using FFmpeg.');self.m.scan()
+        self.m.db.execute('insert into maintenance_labels values (?,?,?)',(str(folder),'办公效率','[]'))
+        result=classification.batch(self.m,True,field='tags')
+        labels,_=classification.existing(self.m,str(folder))
+        self.assertEqual(labels['category'],'办公效率')
+        self.assertIn('音视频',labels['tags'])
+        self.assertEqual(result['changed'],1)
+        again=classification.batch(self.m,True,field='tags')
+        self.assertEqual(again['changed'],0)
+
+    def test_auto_fields_reject_unknown_scope(self):
+        with self.assertRaises(ValueError): classification.batch(self.m,True,field='unknown')
+
+    def test_low_confidence_category_is_applied_and_manual_edit_is_preserved(self):
+        folder=self.skill('营销设计','Unspecified helper.');self.m.scan()
+        row=self.row('营销设计')
+        proposed=classification.infer(self.m,row)
+        self.assertEqual(proposed['confidence'],'low')
+        self.assertTrue(proposed['category'])
+        self.m.db.execute('insert into maintenance_labels values (?,?,?)',(str(folder),'','["数据"]'))
+        result=classification.batch(self.m,True,field='category')
+        self.assertGreaterEqual(result['changed'],1)
+        labels,state=classification.existing(self.m,str(folder))
+        self.assertEqual(labels,{'category':proposed['category'],'tags':['数据']})
+        self.assertFalse(state['manual_category'])
+        self.m.set_labels([row['id']],category='办公效率')
+        classification.batch(self.m,True,field='category')
+        labels,state=classification.existing(self.m,str(folder))
+        self.assertEqual(labels,{'category':'办公效率','tags':['数据']})
+        self.assertTrue(state['manual_category'])
+
+    def test_unmatched_skill_goes_to_other(self):
+        inferred=classification.infer(self.m,self.row('a'))
+        self.assertEqual(inferred['confidence'],'unmatched')
+        self.assertEqual(inferred['category'],'其他')
+        result=classification.batch(self.m,True,field='category')
+        self.assertGreaterEqual(result['changed'],1)
+        self.assertEqual(classification.existing(self.m,str(self.roots/'a'))[0]['category'],'其他')
+
+    def test_scoped_inventory_republishes_labels_after_classification(self):
+        self.m.inventory()
+        row=self.row('a')
+        self.m.set_labels([row['id']],category='内容创作')
+        self.assertTrue(self.m.cached_inventory()['cache']['dirty'])
+        self.m.inventory(ids=[row['id']],lightweight=True)
+        fresh=self.m.cached_inventory()
+        self.assertFalse(fresh['cache']['dirty'])
+        self.assertEqual(next(i for i in fresh['items'] if i['id']==row['id'])['classification']['category'],'内容创作')
 
     def test_batch_dedup_and_undo_skips_later_manual_changes(self):
         (self.roots/'alias').symlink_to(self.roots/'a',target_is_directory=True);self.m.scan()
@@ -100,6 +155,35 @@ class ClassificationSearchTests(unittest.TestCase):
         with patch.object(update_providers,'api_json',return_value={'skills':[{'source':'vercel-labs/skills','skillId':'find-skills','name':'find-skills'}]}):
             out=source_search.query_channel(self.m,{'kind':'skills-sh','name':'skills-sh','base_url':'https://skills.sh'},'find')
         self.assertEqual(out[0]['source']['path'],'')
+        self.assertIsNone(self.m.source(self.row('a')))
+
+    def test_unavailable_channel_does_not_report_empty_search(self):
+        with patch.object(source_search,'query_channel') as query:
+            result=source_search.search(self.m,'ffmpeg','gitcode')
+        query.assert_not_called()
+        self.assertEqual(result['trace'][0]['status'],'unsupported')
+        self.assertIn('授权令牌',result['trace'][0]['reason'])
+
+    def test_gitlab_explicit_search_returns_unbound_repository_candidate(self):
+        import update_providers
+        payload=[{'name':'Video Skill','web_url':'https://gitlab.com/example/video-skill'},
+                 {'name':'Invalid','web_url':'https://invalid.example/video-skill'}]
+        with patch.object(update_providers,'api_json',return_value=payload) as api:
+            result=source_search.search(self.m,'video','gitlab')
+        self.assertIn('/api/v4/projects?',api.call_args.args[1])
+        self.assertEqual(result['trace'][0]['status'],'success')
+        self.assertEqual(len(result['candidates']),1)
+        self.assertEqual(result['candidates'][0]['source']['provider'],'gitlab')
+        self.assertIn('待核对',result['candidates'][0]['from_path'])
+        self.assertIsNone(self.m.source(self.row('a')))
+
+    def test_skillsmp_explicit_search_returns_unbound_candidate(self):
+        import update_providers
+        payload={'data':{'skills':[{'name':'Video Skill','githubUrl':'https://github.com/example/video-skill'}]}}
+        with patch.object(update_providers,'api_json',return_value=payload):
+            result=source_search.search(self.m,'video','skillsmp')
+        self.assertEqual(result['trace'][0]['status'],'success')
+        self.assertEqual(result['candidates'][0]['name'],'Video Skill')
         self.assertIsNone(self.m.source(self.row('a')))
 
     def test_batch_checkpoint_survives_next_call(self):

@@ -9,6 +9,7 @@ import test_maintenance as fixtures
 import maintenance
 import task_scopes
 import web_jobs
+import diagnostics
 from skill_locations import default_agent_roots, add_preset_agent
 
 
@@ -74,6 +75,35 @@ class ConcurrentJobsTests(unittest.TestCase):
                 second=jobs.start({'action':'check','target':self.row('b')['id']})
                 self.assertNotEqual(first['id'],second['id'])
             finally:release.set();self.finish(jobs)
+
+    def test_classification_waits_for_check_and_reuses_queued_job(self):
+        jobs=web_jobs.Jobs(self.a);started=threading.Event();release=threading.Event()
+        calls=[]
+        def delayed(m,p):
+            calls.append(p['action'])
+            if p['action']=='check':
+                started.set();release.wait(4)
+            return {'action':p['action']}
+        with patch.object(maintenance,'dispatch',delayed):
+            check=jobs.start({'action':'check','target':self.row('a')['id']})
+            try:
+                self.assertTrue(started.wait(2))
+                classify=jobs.start({'action':'classification-apply'})
+                self.assertEqual(jobs.snapshot(classify['id'])['state'],'queued')
+                self.assertEqual(jobs.snapshot(classify['id'])['message'],'等待其他任务完成')
+                self.assertEqual(jobs.start({'action':'classification-apply'})['id'],classify['id'])
+                with self.assertRaises(web_jobs.BusyError):
+                    jobs.start({'action':'classification-apply','field':'tags'})
+                self.assertEqual(calls,['check'])
+            finally:
+                release.set();self.finish(jobs)
+        self.assertEqual(jobs.snapshot(check['id'])['state'],'succeeded')
+        self.assertEqual(jobs.snapshot(classify['id'])['state'],'succeeded')
+        self.assertEqual(calls,['check','classification-apply'])
+
+    def test_busy_error_has_specific_diagnostic(self):
+        self.assertEqual(diagnostics.classify(web_jobs.BusyError('相关 Skill 或目录正在操作')),
+                         ('busy','相关 Skill 或目录正在操作'))
 
     def test_failure_of_one_query_does_not_end_another(self):
         jobs=web_jobs.Jobs(self.a);gate=threading.Event();release=threading.Event()

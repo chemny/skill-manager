@@ -15,6 +15,11 @@ daily_recommendations.AnonymousGitHub.get=daily_remote
 x=fixtures.MaintenanceTests();x.setUp()
 for agent in ('codex','claude_code'):x.a.update_source('add',agent,str(x.roots))
 x.m.scan()
+candidate=x.base/'.devin/skills/example';candidate.mkdir(parents=True)
+(candidate/'SKILL.md').write_text('---\\nname: example\\n---\\n')
+import skill_locations
+original_candidate_scan=skill_locations.discover_agent_candidates
+skill_locations.discover_agent_candidates=lambda config:original_candidate_scan(config,home=x.base)
 x.m.backup(x.m.select(str(x.roots/'a'),'shared'))
 (x.roots/'a/SKILL.md').write_text('---\\nname: a\\nversion: 1.1\\n---\\nchanged after backup')
 x.m.inventory()
@@ -94,6 +99,46 @@ async function main(){
  const inventoryStarts=()=>requests.filter(r=>r.action==='job-start'&&r.request.action==='inventory');
  const beforeRemove=inventoryStarts().length;
  await page.evaluate(()=>tab('settings','scan'));
+ await page.locator('#rootRows .agent-directory-section').first().waitFor();
+ assert.match(await page.locator('#rootRows [data-configured-agent="shared"]').innerText(),/公共目录/);
+ assert.equal(await page.locator('#rootRows .directory-choice-row,#rootRows [data-remove-root]').count(),0);
+ assert.equal(await page.locator('#rootRows [data-agent-directories]').count(),await page.locator('#rootRows .agent-directory-section').count());
+ assert.match(await page.locator('#rootRows [data-configured-agent="codex"]').innerText(),/Codex.*目录.*移除目录.*移除 Agent/s);
+ assert.ok(await page.locator('#rootRows [data-configured-agent="codex"]').evaluate(n=>n.getBoundingClientRect().height<70));
+ await page.locator('#rootRows [data-agent-directories="codex"]').click();
+ await page.locator('#directoryDialog').waitFor({state:'visible'});
+ assert.ok(await page.locator('#directoryDialog [data-remove-root]').count()>0);
+ assert.equal(await page.locator('#directoryDialog .directory-choice-actions .muted').count(),await page.evaluate(()=>scanLocationGroups.filter(g=>g.group[0].platform==='codex'&&!g.removable.length).length));
+ await page.screenshot({path:output.replace(/\.json$/,'-directories-dialog.png')});
+ const rootsBefore=await page.locator('#directoryDialog .directory-choice-row').count();
+ await page.locator('#directoryDialog [data-remove-root]').first().click();
+ await page.locator('#deleteConfirmation').waitFor({state:'visible'});
+ await page.locator('#deleteConfirmation [data-cancel-delete]').click();
+ assert.equal(await page.locator('#directoryDialog .directory-choice-row').count(),rootsBefore);
+ await page.locator('#closeDirectoryDialog').click();
+ assert.equal(await page.locator('#rootRows .available-agents').evaluate(n=>Boolean(n.compareDocumentPosition(document.querySelector('#rootRows .agent-directory-section')) & Node.DOCUMENT_POSITION_PRECEDING)),true);
+ await page.screenshot({path:output.replace(/\.json$/,'-directories-desktop.png')});
+ await page.setViewportSize({width:390,height:844});
+ assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+ assert.ok(await page.locator('#rootRows [data-configured-agent="codex"]').evaluate(n=>n.getBoundingClientRect().height<70));
+ await page.screenshot({path:output.replace(/\.json$/,'-directories-mobile.png')});
+ await page.setViewportSize({width:1440,height:1000});
+ report.directoryManagement=true;
+ await page.evaluate(()=>selectSetting('channels'));
+ await page.locator('#channelRows .channel-row').first().waitFor();
+ const channelCount=await page.locator('#channelRows .channel-row').count();
+ assert.equal(await page.locator('#channelRows [data-channel-test]').count(),channelCount);
+ assert.equal(await page.locator('#channelRows [data-channel-search]').count(),await page.evaluate(()=>updateChannels.filter(c=>c.search_supported).length));
+ assert.equal(await page.locator('#channelRows .channel-availability').count(),channelCount);
+ assert.match(await page.locator('#channelRows .channel-row:has([data-channel-test="gitcode"])').innerText(),/仅仓库更新/);
+ assert.equal(await page.locator('#channelRows [data-channel-search="gitcode"]').count(),0);
+ assert.equal(await page.locator('#channelRows [data-channel-search="gitlab"]').count(),1);
+ assert.equal(await page.locator('#channelRows .channel-row:has([data-channel-test="find-skills"])').count(),0);
+ await page.locator('#channelRows [data-channel-test="local"]').click();
+ await page.waitForFunction(()=>document.querySelector('#channel-test-local')?.textContent.includes('无需网络'));
+ assert.match(await page.locator('#channelRows .channel-row:has([data-channel-test="local"]) .channel-availability').innerText(),/本机记录/);
+ report.channelCapabilities=true;
+ await page.evaluate(()=>selectSetting('scan'));
  await page.locator('[data-agent-remove="codex"]').click();await page.locator('#deleteConfirmation .confirm-delete').click();
  await page.waitForFunction(()=>!inventory.some(i=>i.platform==='codex')&&inventory.length===4&&inventorySnapshot.cache.recheck_ids?.length===4);
  await page.evaluate(()=>tab('skills'));
@@ -161,6 +206,20 @@ async function main(){
  await page.evaluate(()=>{activeTab='skills';scheduleBackupAdvice();});
  await page.clock.runFor(300000);assert.equal(await page.evaluate(()=>adviceCalls),1);
  report.inactivePageDoesNotRetry=true;
+ await page.evaluate(()=>tab('settings','scan'));
+ await page.locator('#rootRows [data-agent-scan]').waitFor();
+ assert.equal(await page.locator('#rootRows .available-agents').evaluate(n=>getComputedStyle(n).gridTemplateColumns.split(' ').length),3);
+ assert.equal(await page.locator('#rootRows .available-agent-row span').count(),await page.locator('#rootRows .available-agent-row').count());
+ assert.equal(await page.locator('#rootRows .available-agent-row').first().innerText(),await page.locator('#rootRows .available-agent-row strong').first().innerText());
+ const beforeScan=await page.evaluate(()=>endpoint('/api/sources'));
+ await page.locator('#rootRows [data-agent-scan]').click();
+ await page.locator('#rootRows [data-agent-candidate]').waitFor();
+ assert.match(await page.locator('#rootRows .agent-scan-results').innerText(),/Devin/);
+ assert.equal((await page.evaluate(()=>endpoint('/api/sources'))).agents.some(a=>a.id==='devin'&&a.added),false);
+ await page.locator('#rootRows [data-agent-candidate]').click();
+ await page.waitForFunction(()=>agentCatalog.some(a=>a.id==='devin'&&a.added));
+ assert.equal((await page.evaluate(()=>endpoint('/api/sources'))).agents.some(a=>a.id==='devin'&&a.added),true);
+ report.agentCandidateScan={readOnlyBeforeAdd:!beforeScan.agents.some(a=>a.id==='devin'&&a.added),addedOnChoice:true};
  assert.deepEqual(errors,[]);report.pageErrors=errors;
  fs.writeFileSync(output,JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify(report,null,2));
 }

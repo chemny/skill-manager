@@ -38,6 +38,23 @@ class MaintenanceTests(unittest.TestCase):
 
     def row(self, name): return self.m.select(name)
 
+    def test_identical_copies_have_content_identity_but_changed_assets_do_not(self):
+        copy = self.skill('copy', 'one', 'a')
+        self.m.scan()
+        items = [i for i in self.m.inventory()['items'] if i['name'] == 'a']
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0]['content_fingerprint'], items[1]['content_fingerprint'])
+        (copy/'asset.txt').write_text('different')
+        items = [i for i in self.m.inventory()['items'] if i['name'] == 'a']
+        self.assertNotEqual(items[0].get('content_fingerprint'), items[1].get('content_fingerprint'))
+
+    def test_hidden_backup_skills_are_not_active_installations(self):
+        backup = self.roots/'.cmm-skill-backups'/'old'/'a'
+        backup.mkdir(parents=True)
+        (backup/'SKILL.md').write_text('---\nname: a\n---\nbackup')
+        self.m.scan()
+        self.assertNotIn(str(backup), [i['path'] for i in self.m.inventory()['items']])
+
     def test_ambiguous_name_and_shared_link(self):
         self.skill('other','other','a'); self.m.scan()
         with self.assertRaisesRegex(ValueError,'Ambiguous'): self.row('a')

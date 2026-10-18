@@ -1,10 +1,10 @@
-"""Conservative local classification, manual locks and reversible batch labels."""
+"""Local classification, manual locks and reversible batch labels."""
 import hashlib
 import json
 import re
 from pathlib import Path
 
-VERSION='local-rules-2'
+VERSION='local-rules-3'
 CATEGORIES={
  '内容创作':'写作 文案 文章 口播 脚本 创作 课程 小红书 公众号 writer writing copywriting article blog newsletter storytelling course content-writing',
  '设计与多媒体':'图片 视觉 海报 插画 漫画 音频 视频 剪辑 封面 设计 image video audio ffmpeg illustrator infographic poster banner canvas figma design slides deck remotion animation 3d',
@@ -49,6 +49,9 @@ create table if not exists classification_batches(id text primary key, created_a
                          [('categories',n) for n in CATEGORIES if n not in ('内容创作','编程开发','信息研究','办公效率','工具与自动化')]+
                          [('tags',n) for n in TAGS if n not in ('写作','图片','音视频','代码','搜索','数据','文档','自动化')])
         m.db.execute("insert into maintenance_settings values ('classification_taxonomy_v1','1')")
+    if not m.db.execute("select 1 from maintenance_settings where key='classification_other_v1'").fetchone():
+        m.db.execute("insert or ignore into maintenance_taxonomy values ('categories','其他')")
+        m.db.execute("insert into maintenance_settings values ('classification_other_v1','1')")
 
 
 def hits(text, vocabulary):
@@ -93,8 +96,9 @@ def infer(m, row):
         score=5*len(hits(title,terms))+3*len(hits(description or intro[:500],terms))
         if score>=3: tags.append((score,tag))
     tags.sort(key=lambda t:t[0],reverse=True)
-    return {'category':best[1] if confident else '', 'tags':[tag for _,tag in tags[:3]],
-            'suggested_category':best[1] if best[0] else '', 'confidence':'high' if confident else 'review',
+    category=best[1] if best[0] else ('其他' if '其他' in values['categories'] else '')
+    return {'category':category, 'tags':[tag for _,tag in tags[:3]],
+            'confidence':'high' if confident else 'low' if best[0] else 'unmatched',
             'evidence':best[2], 'version':VERSION, 'hash':hashlib.sha256(body.encode()).hexdigest()}
 
 
@@ -118,8 +122,8 @@ def classify(m, row, apply=False):
     before,state=existing(m,real)
     inferred=infer(m,row)
     # Older labels without provenance are treated as user-owned, never overwritten.
-    manual_category=bool(before and (state is None or state.get('manual_category')))
-    manual_tags=bool(before and (state is None or state.get('manual_tags')))
+    manual_category=bool(before and (state.get('manual_category') if state is not None else before['category']))
+    manual_tags=bool(before and (state.get('manual_tags') if state is not None else before['tags']))
     after={'category':before['category'] if manual_category else inferred['category'],
            'tags':before['tags'] if manual_tags else inferred['tags']}
     new_state={**inferred,'manual_category':manual_category,'manual_tags':manual_tags}
@@ -131,20 +135,39 @@ def classify(m, row, apply=False):
     return result
 
 
-def batch(m, apply=False):
+def batch(m, apply=False, field='both'):
     from maintenance import stamp,uid
+    if field not in ('both','category','tags'): raise ValueError('不支持的分类操作')
     rows=[];seen=set();errors=[]
     roots=[root for _,root,_ in m.roots()]
     for raw in m.r.all_capabilities():
         row=dict(raw);path=Path(row['path']);real=str(path.resolve())
         if real in seen or row['kind']!='skill' or row['health']=='not-scanned' or not (path/'SKILL.md').is_file() or not any(root==path or root in path.parents for root in roots): continue
         seen.add(real)
-        try: rows.append(classify(m,row,False))
+        try:
+            result=classify(m,row,False)
+            if field!='both':
+                before=result['before'] or {'category':'','tags':[]}
+                after=result['after']
+                result['after']={
+                    'category':(before['category'] or after['category']) if field=='category' else before['category'],
+                    'tags':(before['tags'] or after['tags']) if field=='tags' else before['tags'],
+                }
+                result['changed']=before!=result['after']
+            rows.append(result)
         except (OSError,UnicodeError,ValueError) as exc: errors.append({'name':row['name'],'error':type(exc).__name__})
     bid=uid('classification')
     if apply:
+        record_rows=rows if field=='both' else [row for row in rows if row['changed']]
         with m.db:
-            for row in rows:
+            if field!='both':
+                for row in rows:
+                    if row['changed'] or row['after_state']==row['before_state']:
+                        continue
+                    real=row['real_path'];current,current_state=existing(m,real)
+                    if current==row['before'] and current_state==row['before_state']:
+                        m.db.execute('insert or replace into classification_state values (?,?)',(real,json.dumps(row['after_state'],ensure_ascii=False)))
+            for row in record_rows:
                 real=row['real_path'];after=row['after']
                 current,current_state=existing(m,real)
                 if current!=row['before'] or current_state!=row['before_state']:
@@ -153,7 +176,7 @@ def batch(m, apply=False):
                     continue
                 m.db.execute('insert or replace into maintenance_labels values (?,?,?)',(real,after['category'],json.dumps(after['tags'],ensure_ascii=False)))
                 m.db.execute('insert or replace into classification_state values (?,?)',(real,json.dumps(row['after_state'],ensure_ascii=False)))
-            m.db.execute('insert into classification_batches values (?,?,?,?)',(bid,stamp(),'applied',json.dumps(rows,ensure_ascii=False)))
+            m.db.execute('insert into classification_batches values (?,?,?,?)',(bid,stamp(),'applied',json.dumps(record_rows,ensure_ascii=False)))
             m.r.log_operation('classification-batch',bid,{'total':len(rows),'changed':sum(r['changed'] for r in rows)},commit=False)
         m.invalidate_cache()
     return {'id':bid if apply else None,'applied':apply,'total':len(rows),'changed':sum(r['changed'] for r in rows),
@@ -184,5 +207,4 @@ def undo(m, bid):
 
 def summary(m):
     rec=m.db.execute('select id,created_at,state from classification_batches order by rowid desc limit 1').fetchone()
-    pending=m.db.execute("select count(*) from classification_state where json_extract(payload,'$.confidence')='review' and coalesce(json_extract(payload,'$.manual_category'),0)=0").fetchone()[0]
-    return {'last_batch':dict(rec) if rec else None,'review':pending,'version':VERSION}
+    return {'last_batch':dict(rec) if rec else None,'version':VERSION}

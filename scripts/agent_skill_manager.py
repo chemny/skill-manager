@@ -70,7 +70,6 @@ DEFAULT_UPDATE_CHANNELS: List[Dict[str, Any]] = [
     {"name": "gitee", "label": "Gitee", "kind": "repository", "base_url": "https://gitee.com", "priority": 65, "builtin": True},
     {"name": "gitlab", "label": "GitLab", "kind": "repository", "base_url": "https://gitlab.com", "priority": 55, "builtin": True},
     {"name": "skillsmp", "label": "SkillsMP", "kind": "discovery", "base_url": "https://skillsmp.com", "priority": 50, "builtin": True},
-    {"name": "find-skills", "label": "find-skills", "kind": "discovery", "base_url": "npx skills find", "priority": 45, "builtin": True},
     {"name": "local", "label": "Local Versions", "kind": "local", "base_url": "local", "priority": 30, "builtin": True},
 ]
 
@@ -1001,7 +1000,8 @@ class Registry:
         return result
 
     def update_channels(self) -> List[Dict[str, Any]]:
-        rows = self.conn.execute("select * from update_channels where deleted=0 order by priority desc, name").fetchall()
+        from update_providers import capabilities
+        rows = self.conn.execute("select * from update_channels where deleted=0 and name!='find-skills' order by priority desc, name").fetchall()
         items: List[Dict[str, Any]] = []
         for row in rows:
             stats = self.conn.execute(
@@ -1031,6 +1031,10 @@ class Registry:
                 """,
                 (row["name"],),
             ).fetchone()
+            last_test = self.conn.execute(
+                "select outcome, occurred_at from update_channel_events where channel_name=? and action='test' order by occurred_at desc, id desc limit 1",
+                (row["name"],),
+            ).fetchone()
             total = int(stats["total"] or 0)
             successes = int(stats["successes"] or 0)
             failures = int(stats["failures"] or 0)
@@ -1057,11 +1061,16 @@ class Registry:
                     "last_used_at": stats["last_used_at"] or "",
                     "last_success_at": stats["last_success_at"] or "",
                     "last_error": last_error["message"] if last_error else "",
+                    "last_test_outcome": last_test["outcome"] if last_test else "",
+                    "last_test_at": last_test["occurred_at"] if last_test else "",
+                    **capabilities(row),
                 }
             )
         return sorted(items, key=lambda item: (not item["enabled"], -int(item["score"]), item["name"]))
 
     def channel_enabled(self, name: str) -> bool:
+        if name == 'find-skills':
+            return False
         row = self.conn.execute("select enabled, deleted from update_channels where name=?", (name,)).fetchone()
         return bool(row and row["enabled"] and not row["deleted"])
 
@@ -1369,7 +1378,7 @@ def update_source(action: str, platform: str, root: str, enabled: Optional[bool]
             roots.append(root)
     elif action == 'remove-agent':
         if platform == 'shared':
-            raise ValueError('自定义目录请逐项移除')
+            raise ValueError('公共目录请逐项移除')
         settings.update(enabled=False, added=False, removed=True, discover_defaults=False, roots=[])
     elif action == "remove":
         if root in roots:
@@ -3191,6 +3200,19 @@ def install_source_from_url(url: str, tmpdir: Path) -> Tuple[Path, Dict[str, str
         return root, {"source_type":registered['provider'], "source_url":registered['url'],
                       "source_ref":registered['ref'], "source_path":"", "channel":registered['channel'],
                       "slug":registered.get('slug', '')}
+    parsed = urllib.parse.urlparse(clean)
+    if parsed.scheme == 'https' and parsed.netloc == 'clawhub.ai' and parsed.path == '/api/v1/download' and not parsed.fragment:
+        params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        if set(params) != {'slug'} or len(params['slug']) != 1 or not re.fullmatch(r'[A-Za-z0-9_.-]+', params['slug'][0]):
+            raise ValueError('Invalid ClawHub Skill link')
+        slug = params['slug'][0]
+        canonical = 'https://clawhub.ai/api/v1/download?slug=' + urllib.parse.quote(slug)
+        try:
+            root = download_zip_archive(canonical, tmpdir)
+        except zipfile.BadZipFile as exc:
+            raise ValueError('此条目未提供可安装的 Skill ZIP，请查看详情核对原始仓库') from exc
+        return root, {"source_type":"clawhub", "source_url":canonical,
+                      "source_ref":"", "source_path":"", "slug":slug}
     info = parse_github_url(clean) or parse_skills_sh_url(clean)
     if info:
         repo_api = f"https://api.github.com/repos/{info['owner']}/{info['repo']}"
@@ -4808,7 +4830,7 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
             return
         try:
             payload = api_payload(self)
-            if self.server.maintenance_jobs.busy() and self.path not in ("/api/maintenance", "/api/service-stop", "/api/sources", "/api/update-channels", "/api/source-update", "/api/agent-add", "/api/update-channel-update", "/api/update-channel-search", "/api/update-channel-test", "/api/pick-directory", "/api/pick-install-source"):
+            if self.server.maintenance_jobs.busy() and self.path not in ("/api/maintenance", "/api/service-stop", "/api/sources", "/api/agent-candidates", "/api/update-channels", "/api/source-update", "/api/agent-add", "/api/update-channel-update", "/api/update-channel-search", "/api/update-channel-test", "/api/pick-directory", "/api/pick-install-source"):
                 json_response(self, {"error":"A maintenance task is running; wait for its result", "code":"busy", "message":"另一个任务正在执行，请等待完成。"}, 409)
                 return
             if self.path == "/api/service-stop":
@@ -4859,6 +4881,10 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
             if self.path == "/api/sources":
                 from skill_locations import agent_catalog
                 json_response(self, {"ok": True, "sources": source_entries(), "agents": agent_catalog(load_config()), "config_path": str(CONFIG_PATH)})
+                return
+            if self.path == "/api/agent-candidates":
+                from skill_locations import discover_agent_candidates
+                json_response(self, {"ok": True, "candidates": discover_agent_candidates(load_config())})
                 return
             if self.path == "/api/source-update":
                 with self.server.maintenance_jobs.configure():

@@ -282,6 +282,50 @@ class SubsetTests(unittest.TestCase):
         self.assertEqual(self.m.source(row)['path'],'old/a')
         self.assertEqual(json.loads(self.m.state(row)['last_check'])['source_issue'],checked['source_issue'])
 
+    def test_verified_unique_relocation_updates_binding_after_comparison(self):
+        row=self.fixture()
+        old={**self.source,'path':'old/a','evidence':'verified-package'}
+        self.m.db.execute('update maintenance_items set source=? where id=?',(json.dumps(old),row['id']))
+        self.m.db.commit()
+        self.m._use_check_cache=True;self.m._targeted_checks=True
+        with patch.object(self.m,'remote_json',side_effect=self.remote):
+            checked=self.m.check(row)
+            cached=self.m.check(row)
+        self.assertNotEqual(checked['status'],'check_failed')
+        self.assertEqual(checked['source_correction'],'a')
+        self.assertEqual(self.m.source(row)['path'],'a')
+        self.assertTrue(cached['cache_hit'])
+
+    def test_verified_relocation_rejects_mismatched_skill_name(self):
+        row=self.fixture({'SKILL.md':b'---\nname: other\n---\nwrong skill'})
+        old={**self.source,'path':'old/a','evidence':'verified-package'}
+        self.m.db.execute('update maintenance_items set source=? where id=?',(json.dumps(old),row['id']))
+        self.m.db.commit()
+        self.m._use_check_cache=True;self.m._targeted_checks=True
+        with patch.object(self.m,'remote_json',side_effect=self.remote):checked=self.m.check(row)
+        self.assertEqual(checked['code'],'remote_source_path')
+        self.assertEqual(self.m.source(row)['path'],'old/a')
+
+    def test_identical_installed_skill_resolves_repository_root(self):
+        row=self.fixture()
+        old={**self.source,'path':'','evidence':'installed-metadata'}
+        self.m.db.execute('update maintenance_items set source=? where id=?',(json.dumps(old),row['id']))
+        self.m.db.commit()
+        self.m._use_check_cache=True;self.m._targeted_checks=True
+        with patch.object(self.m,'remote_json',side_effect=self.remote):checked=self.m.check(row)
+        self.assertNotEqual(checked['status'],'check_failed')
+        self.assertEqual(self.m.source(row)['path'],'a')
+
+    def test_changed_installed_skill_does_not_auto_bind_repository_root(self):
+        row=self.fixture({'SKILL.md':b'---\nname: a\n---\nchanged remotely'})
+        old={**self.source,'path':'','evidence':'installed-metadata'}
+        self.m.db.execute('update maintenance_items set source=? where id=?',(json.dumps(old),row['id']))
+        self.m.db.commit()
+        self.m._targeted_checks=True;self.m._use_check_cache=True
+        with patch.object(self.m,'remote_json',side_effect=self.remote):checked=self.m.check(row)
+        self.assertEqual(checked['code'],'remote_source_path')
+        self.assertEqual(self.m.source(row)['path'],'')
+
     def test_batch_fetch_uses_two_commands_for_multiple_verified_blobs(self):
         self.fixture()
         ids=[e['sha'] for e in self.entries]
@@ -326,8 +370,8 @@ class SubsetTests(unittest.TestCase):
         with patch.object(subset,'git_run',side_effect=[ConnectionResetError('reset'),b'a'*40+b'\tHEAD\n']) as git,patch.object(subset.time,'sleep'):
             self.assertTrue(github_transport.lookup('https://github.com/example/skills.git',['HEAD']))
         self.assertEqual(git.call_count,2)
-        self.assertLessEqual(git.call_args_list[0].kwargs['timeout'],6)
-        self.assertLessEqual(git.call_args_list[1].kwargs['timeout'],12)
+        self.assertLessEqual(git.call_args_list[0].kwargs['timeout'],15)
+        self.assertLessEqual(git.call_args_list[1].kwargs['timeout'],30)
 
     def test_git_command_preserves_certificate_and_protocol_protection(self):
         process=SimpleNamespace(returncode=0,pid=123,poll=lambda:0,wait=lambda:None)
