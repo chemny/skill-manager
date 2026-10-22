@@ -17,6 +17,7 @@ class BusyError(ValueError):
 class Jobs:
     TAXONOMY_ACTIONS = {'taxonomy', 'taxonomy-update','classification-preview','classification-apply','classification-undo','source-search-policy','source-search-policy-update','discover-sources-batch'}
     ACTIONS = __import__('library_batches').ACTIONS | __import__('snapshots').ACTIONS | __import__('library_actions').ACTIONS | {'discover-backups','retain-backup','ignore-backup-candidate','import-backup','preview-purge-many','apply-purge-many','probe-source','set-labels','import-usage','discover-sources','duplicate-review','inventory', 'scan', 'check', 'check-many', 'preview', 'apply',
+               'project-analyze','project-analysis-stop','space-catalog','space-add-project','disk-scan','disk-report','disk-stop','space-scan','space-results','space-trash','space-trash-list','space-restore','space-purge','space-advice','space-trash-batch','space-restore-many','trash-purge-many',
                'discovery-refresh','discovery-verify','translate-descriptions','cache-clean','execute','execute-library-many','execute-backups','execute-restore-many','empty-trash',
                'update-now', 'backup', 'backups', 'backup-detail', 'verify-backup', 'protect',
                'unprotect', 'source-bind', 'history', 'plans', 'get-plan',
@@ -76,7 +77,7 @@ class Jobs:
                 request['ids'] = [r['id'] for r in registry.conn.execute("select id,kind,platform,health,path from capabilities where kind='skill'") if r['platform'] not in removed and r['health']!='not-scanned' and maintenance.absolute(r['path']).exists()]
             finally:
                 registry.conn.close()
-        if request.get('action') in ('cache-clean','execute','execute-library-many','execute-backups','execute-restore-many','empty-trash','update-now','apply', 'recover','import-backup','apply-purge-many','directory-add','apply-restore-many','apply-library-many') and request.get('confirmed') is not True:
+        if request.get('action') in ('space-trash','space-restore','space-purge','space-trash-batch','space-restore-many','trash-purge-many','cache-clean','execute','execute-library-many','execute-backups','execute-restore-many','empty-trash','update-now','apply', 'recover','import-backup','apply-purge-many','directory-add','apply-restore-many','apply-library-many') and request.get('confirmed') is not True:
             raise ValueError('Confirmation required')
         if request.get('action') == 'check-many' and (not isinstance(request.get('ids'), list) or
                 not request['ids'] or len(request['ids']) > 10000 or
@@ -87,9 +88,20 @@ class Jobs:
             raise ValueError('Invalid inventory scope')
         scope = task_scopes.describe(self.legacy,request)
         ui_scope=request.get('ui_scope')
-        if ui_scope is not None and (not isinstance(ui_scope,dict) or ui_scope.get('view') not in ('home','discovery','skills','updates','backups','trash','settings','sources','suggestions','install','plans') or not isinstance(ui_scope.get('key'),str) or len(ui_scope['key'])>12000):
+        if ui_scope is not None and (not isinstance(ui_scope,dict) or ui_scope.get('view') not in ('space','home','discovery','skills','updates','backups','trash','settings','sources','suggestions','install','plans') or not isinstance(ui_scope.get('key'),str) or len(ui_scope['key'])>12000):
             raise ValueError('Invalid view scope')
         with self.lock:
+            if request['action'] in ('disk-stop', 'project-analysis-stop'):
+                target = 'disk-scan' if request['action']=='disk-stop' else 'project-analyze'
+                for existing in self.active:
+                    if self.records[existing]['action']==target:
+                        self.records[existing]['stop_requested']=True
+            if request['action'] in ('project-analyze', 'disk-scan'):
+                for existing in self.active:
+                    if self.records[existing]['action'] in ('project-analyze', 'disk-scan'):
+                        if request['action']=='disk-scan' and self.records[existing]['action']=='disk-scan' and self.records[existing].get('_project_scope_key')==repr((request.get('catalog_id'), request.get('ids'), request.get('agents'), request.get('rescan'))):
+                            return copy.deepcopy(self.records[existing])
+                        raise BusyError('另一个项目扫描或分析正在进行，请等待完成或停止。')
             if request['action'] == 'classification-apply':
                 for existing in self.active:
                     if self.records[existing]['action'] == 'classification-apply':
@@ -119,6 +131,8 @@ class Jobs:
                                  'global':scope['global'],'catalog':scope['catalog'],'plan_id':request.get('id'),
                                  'operation':scope['operation'],
                                  'ui_scope':copy.deepcopy(ui_scope),
+                                 'project_paths':copy.deepcopy(request.get('paths', [])) if request['action']=='project-analyze' else [],
+                                 '_project_scope_key':repr((request.get('catalog_id'), request.get('ids'), request.get('agents'), request.get('rescan'))) if request['action']=='disk-scan' else None,
                                  '_check_key':check_key,
                                  '_inventory_key':inventory_key,
                                  'created_at':maintenance.stamp(), 'completed':0, 'total':None,
@@ -183,6 +197,16 @@ class Jobs:
                                      progress=progress, run_id=jid, scope=request.get('scope','partial'))
             else:
                 m.batch_progress=lambda completed,total,message:self.update(jid,completed=completed,total=total,message=message)
+                if request['action'] in ('project-analyze', 'disk-scan'):
+                    m.project_current = lambda path: self.update(jid, current_project=path)
+                    def cancel_requested():
+                        with self.lock:
+                            return bool(self.records[jid].get('stop_requested'))
+                    m.cancel_requested = cancel_requested
+                if request['action'] == 'project-analyze':
+                    m.project_result = lambda rows: self.update(jid, partial_analyses=copy.deepcopy(rows))
+                if request['action'] == 'disk-scan':
+                    m.disk_result = lambda report: self.update(jid, partial_report=copy.deepcopy(report))
                 result = maintenance.dispatch(m, request)
             self.update(jid, result=result, message='处理完成')
             final_state = 'succeeded'

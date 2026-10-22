@@ -22,6 +22,13 @@ from pathlib import Path
 BROWSE_ACTIONS = frozenset({'discovery-cached','uninstall-references','cache-inspect','source-search-policy','taxonomy','inventory-cached','inventory-detail','backups','history','plans','get-plan','install-roots','usage','update-summary','duplicate-cached','backup-detail','backup-advice','restore-targets','open-directory'})
 
 SCHEMA = '''
+create table if not exists maintenance_space_catalogs(id text primary key, created_at text, payload text);
+create table if not exists maintenance_space_preferences(key text primary key, payload text);
+create table if not exists maintenance_project_analyses(path text primary key, payload text);
+create table if not exists maintenance_project_comparisons(id text primary key, report_id text, created_at text, payload text);
+create table if not exists maintenance_disk_scans(id text primary key, created_at text, payload text);
+create table if not exists maintenance_space_scans(id text primary key, created_at text, payload text);
+create table if not exists maintenance_space_trash(id text primary key, created_at text, state text, payload text);
 create table if not exists maintenance_plans(id text primary key, created_at text, state text, payload text);
 create table if not exists maintenance_backups(id text primary key, created_at text, path text, payload text, state text);
 create table if not exists maintenance_backup_flags(id text primary key, retained integer default 0);
@@ -2092,6 +2099,18 @@ def api_dispatch(legacy, payload):
 
 def dispatch(m, payload):
     action = payload.get('action')
+    if action in ('project-analyze','project-analysis-stop'):
+        import project_analysis
+        return project_analysis.stop() if action=='project-analysis-stop' else project_analysis.analyze(m, payload)
+    if action in ('space-catalog','space-add-project','disk-scan','disk-report','disk-stop'):
+        import project_space
+        return project_space.dispatch(m, payload)
+    if action in ('space-advice','space-trash-batch','space-restore-many','trash-purge-many'):
+        import project_cleanup
+        return project_cleanup.dispatch(m, payload)
+    if action in ('space-scan','space-results','space-trash','space-trash-list','space-restore','space-purge'):
+        import space_cleanup
+        return space_cleanup.dispatch(m, payload)
     if action == 'translate-descriptions':
         import description_translation
         return description_translation.descriptions(m, payload)

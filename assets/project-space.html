@@ -1,0 +1,72 @@
+<style>
+#space{display:flex;flex-direction:column;min-height:0;min-width:0;letter-spacing:0}
+.project-layout{display:flex;flex:1;min-height:0;min-width:0;flex-direction:column}
+.project-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 0;flex:none}
+.project-summary{display:flex;align-items:baseline;gap:12px;white-space:nowrap;font-size:12px;color:var(--muted)}
+.project-summary strong{font-size:17px;font-weight:600;color:var(--ink)}
+.project-controls{display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:0;flex-wrap:wrap}
+.project-controls .search{min-width:130px;width:225px;flex:none}.project-controls select{max-width:145px}
+.project-table-scroll{flex:1;min-height:0;min-width:0;overflow:auto}
+.project-list{width:100%;min-width:560px;table-layout:fixed}
+.project-list col.project-pick-col{width:38px}.project-list col.project-space-col{width:100px}.project-list col.project-files-col{width:85px}.project-list col.project-state-col{width:160px}
+.project-list th,.project-list td{height:44px;padding:10px 12px;line-height:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-bottom:1px solid var(--line);vertical-align:middle}
+.project-list th{font-size:12px;height:42px}.project-list .project-pick{width:38px;padding:10px}
+.project-list input[type=checkbox]{vertical-align:middle;width:17px;height:17px;margin:0}
+.project-list .project-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:400;font-size:13px;cursor:pointer}
+.project-list .num{text-align:right;font-variant-numeric:tabular-nums}.project-list .project-state{font-size:12px;color:var(--muted)}
+.project-list tr[data-project]{cursor:pointer}.project-list tbody tr,.project-list tbody tr.selected{background:transparent}.project-list tbody tr:hover,.project-list tbody tr.selected:hover{background:#f7f8f9}
+.project-progress{display:flex;align-items:center;gap:8px;white-space:nowrap}.project-progress progress{width:52px;height:5px;flex:none;accent-color:var(--accent)}
+.project-running{display:inline-flex;align-items:center;gap:6px}.project-running .loading-ring{width:13px;height:13px;flex:none;border-width:2px}
+.project-pager{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:46px;border-top:1px solid var(--line);font-size:12px;color:var(--muted);flex:none}
+.project-footer{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:72px;border-top:1px solid var(--line);padding:12px 0;font-size:12px;flex:none}
+.project-footer .row{gap:10px}.project-footer .muted{font-size:11px}.project-empty{display:flex;align-items:center;justify-content:center;flex:1;min-height:120px;text-align:center;color:var(--muted)}
+.project-empty h2{font-size:18px;font-weight:500;color:var(--ink);margin:0 0 10px}.project-empty p{font-size:12px;margin:0 0 18px}
+.project-notice{font-size:12px;color:var(--muted);margin:0 0 12px}.project-back{display:flex;align-items:center;gap:8px;padding:10px 0 0}
+.project-back button{padding:4px 0;border:0;background:none;color:var(--accent);font-size:12px}
+.project-advice-list{min-width:760px}.project-advice-list col.project-impact-col{width:42%}.project-advice-list td.project-impact{white-space:normal;font-size:12px;line-height:1.7}
+.project-recycle .project-list{min-width:730px}.project-recycle .project-name{font-weight:400}
+#backups.unified-trash>:not(#projectRecycle){display:none!important}
+#projectScanDialog{width:min(800px,calc(100vw - 32px));max-height:calc(100dvh - 40px)}
+#projectScanDialog .dialog-header,#projectScanDialog .dialog-footer{flex:none}.project-scope-note{font-size:12px;color:var(--muted);margin:0 0 10px}
+.project-agent-row{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:52px;border-bottom:1px solid var(--line)}
+.project-agent-row label{display:flex;align-items:center;gap:10px;cursor:pointer;min-width:0}.project-agent-row label span{font-size:13px;font-weight:400}
+.project-agent-row small{font-size:11px;color:var(--muted)}.project-agent-row button{padding:5px 0;border:0;background:none;color:var(--accent);font-size:12px}
+.project-scope-projects{padding:12px 0 6px 28px}.project-scope-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:9px}
+.project-scope-toolbar .search{max-width:300px}.project-scope-toolbar>label:not(.search){display:flex;align-items:center;gap:7px;font-size:11px;white-space:nowrap}
+.project-scope-list{max-height:240px;overflow:auto;border-block:1px solid var(--line)}
+.project-scope-item{display:flex;align-items:center;gap:9px;padding:9px 6px;min-height:40px;border-bottom:1px solid #edf0f2;cursor:pointer}
+.project-scope-item span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:400}
+.project-scope-item input{flex:none}.project-scope-item:last-child{border:0}
+.project-scope-footer{display:flex;align-items:center;justify-content:space-between;gap:14px;width:100%;font-size:12px;color:var(--muted)}
+.project-scope-footer>.row{margin-left:auto}.project-scope-feedback{font-size:12px;color:var(--muted);padding:6px 0}
+@media(max-width:1250px){.project-toolbar{flex-wrap:wrap}.project-controls{flex:1}.project-controls .search{flex:1;width:190px;max-width:320px}}
+@media(max-width:760px){
+ #space{overflow:hidden!important}.project-toolbar{gap:10px;padding:12px 0}.project-summary{width:100%;gap:10px}.project-controls{width:100%;justify-content:flex-start}.project-controls .search{flex-basis:100%;width:100%;max-width:none}.project-controls select{flex:1;min-width:100px}.project-controls button{flex:none}
+ .project-footer{align-items:flex-start;flex-wrap:wrap;gap:8px;min-height:90px}.project-footer>.row{width:100%;justify-content:flex-end}.project-footer .project-selection{flex:1;min-width:0}.project-pager{min-height:44px}.project-footer button{font-size:12px}
+ #projectScanDialog .dialog-body{padding:12px 16px}.project-agent-row{flex-wrap:wrap;gap:7px;padding:10px 0;min-height:46px}.project-agent-row small{font-size:10px}.project-scope-projects{padding-left:0}.project-scope-toolbar{flex-wrap:wrap;gap:8px}.project-scope-toolbar .search{max-width:none;width:100%;flex-basis:100%}.project-scope-list{max-height:190px}.project-scope-footer{align-items:flex-start;flex-wrap:wrap;gap:10px}
+}
+</style>
+<section id="space" class="view list-page" role="tabpanel" hidden>
+ <div id="diskPanel" class="project-layout">
+  <div class="project-toolbar"><div class="project-summary"><strong id="diskCount">项目清单</strong><span id="diskSize"></span></div><div class="project-controls"><label class="search"><span data-icon="search"></span><input id="diskSearch" placeholder="搜索项目名称" aria-label="搜索项目名称" disabled></label><select id="diskAgent" aria-label="项目 Agent 筛选" hidden></select><select id="diskStatusFilter" aria-label="分析状态筛选" disabled><option value="">全部状态</option><option value="pending">待分析</option><option value="running">分析中</option><option value="completed">已分析</option><option value="partial">部分结果</option><option value="failed">未完成</option></select><button id="diskRescan" hidden data-work title="重新扫描已加入的项目">重新扫描</button></div></div>
+  <p id="diskStatus" class="project-notice" role="status" hidden></p>
+  <div id="diskEmpty" class="project-empty"><div><h2>尚未添加项目</h2><p>选择要扫描的 Agent，查看项目占用空间。</p><button id="diskEmptyStart" class="primary">扫描项目</button></div></div>
+  <div id="diskDirectories" class="project-table-scroll" hidden><table class="project-list"><colgroup><col class="project-pick-col"><col><col class="project-space-col"><col class="project-files-col"><col class="project-state-col"></colgroup><thead><tr><th class="project-pick"><input id="diskSelectPage" type="checkbox" aria-label="选择当前页项目"></th><th>项目名称</th><th class="num">占用空间 ↓</th><th class="num">文件数</th><th>分析状态</th></tr></thead><tbody id="diskRows"></tbody></table></div>
+  <div id="diskPager" class="project-pager" hidden><span id="diskPageInfo"></span><div class="row"><button id="diskPrev">上一页</button><button id="diskNext">下一页</button></div></div>
+  <footer id="diskFooter" class="project-footer" hidden><span id="diskSelection" class="project-selection" role="status">尚未选择项目</span><div class="row"><span id="diskBatchCount" class="muted" role="status"></span><button id="diskReconnect" hidden>重新连接</button><button id="diskStop" hidden>停止</button><button id="diskClearSelection" class="text-button" hidden>清除选择</button><button id="diskAnalyzeSelected" class="primary" disabled data-eligible="false" data-work>分析选中项目</button></div></footer>
+ </div>
+ <div id="spaceAdvicePanel" class="project-layout" hidden>
+  <div class="project-back"><button id="spaceAdviceBack">← 返回项目清单</button></div>
+  <div class="project-toolbar"><div class="project-summary"><strong id="spaceAdviceCount">清理建议</strong><span id="spaceAdviceSize"></span></div><div class="project-controls"><label class="search"><span data-icon="search"></span><input id="spaceAdviceSearch" placeholder="搜索清理内容" aria-label="搜索清理内容"></label><select id="spaceAdviceKind" aria-label="清理类型"><option value="">全部类型</option><option value="cache">程序缓存</option><option value="images">重复图片</option><option value="media">重复素材</option></select><button id="spaceAnalyzeRemaining" hidden data-work>继续分析</button></div></div>
+  <p id="spaceAdviceNotice" class="project-notice" hidden></p>
+  <div class="project-table-scroll"><table class="project-list project-advice-list"><colgroup><col class="project-pick-col"><col><col class="project-files-col"><col class="project-space-col"><col class="project-impact-col"></colgroup><thead><tr><th class="project-pick"><input id="spaceSelectPage" type="checkbox" aria-label="选择本页清理建议"></th><th>清理内容</th><th class="num">文件数</th><th class="num">占用空间</th><th>影响</th></tr></thead><tbody id="spacePlanRows"></tbody></table></div>
+  <footer class="project-footer"><span id="spaceSelection" class="project-selection" role="status">尚未选择清理项</span><div class="row"><span class="muted">移入后可恢复，清空回收站后释放空间。</span><button id="spaceMove" class="primary" disabled data-eligible="false" data-work>移入回收站</button></div></footer>
+ </div>
+</section>
+<div id="projectRecycle" class="project-layout project-recycle" hidden>
+ <div class="project-toolbar"><div class="project-summary"><strong id="projectTrashCount">0 项</strong><span id="projectTrashSize"></span></div><div class="project-controls"><label class="search"><span data-icon="search"></span><input id="projectTrashSearch" placeholder="搜索回收内容" aria-label="搜索回收内容"></label><select id="projectTrashKind" aria-label="回收内容类型"><option value="">全部类型</option><option value="skills">Skills 与备份</option><option value="projects">项目文件</option></select></div></div>
+ <div class="project-table-scroll"><table class="project-list"><colgroup><col class="project-pick-col"><col><col style="width:100px"><col class="project-files-col"><col class="project-space-col"><col style="width:130px"></colgroup><thead><tr><th class="project-pick"><input id="projectTrashSelectPage" type="checkbox" aria-label="选择本页回收内容"></th><th>内容</th><th>类型</th><th class="num">文件数</th><th class="num">占用空间</th><th>回收时间</th></tr></thead><tbody id="projectTrashRows"></tbody></table></div>
+ <div class="project-pager"><span id="projectTrashPageInfo"></span><div class="row"><button id="projectTrashPrev">上一页</button><button id="projectTrashNext">下一页</button></div></div>
+ <footer class="project-footer"><span id="projectTrashSelection" class="project-selection" role="status">尚未选择</span><div class="row"><span class="muted">永久删除后无法恢复。</span><button id="projectTrashRestore" disabled data-eligible="false" data-work>恢复所选</button><button id="projectTrashPurge" class="danger" disabled data-eligible="false" data-work>永久删除</button></div></footer>
+</div>
+<dialog id="projectScanDialog" class="compact-dialog" aria-labelledby="projectScanTitle"><header class="dialog-header"><h2 id="projectScanTitle">扫描项目</h2><button id="projectScanClose" class="icon-button" aria-label="关闭扫描项目">×</button></header><div class="dialog-body"><p class="project-scope-note">选择要扫描的 Agent 和项目，下次会保留本次选择。</p><div id="projectAgentChoices"></div><p id="projectScopeFeedback" class="project-scope-feedback" role="status" hidden></p></div><footer class="dialog-footer"><div class="project-scope-footer"><span id="projectScopeSelection"></span><button id="projectAdd" class="text-button">添加项目</button><div class="row"><button id="projectScanCancel">取消</button><button id="projectScanConfirm" class="primary" data-work>开始扫描</button></div></div></footer></dialog>

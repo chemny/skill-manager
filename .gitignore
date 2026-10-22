@@ -36,3 +36,11 @@ Thumbs.db
 publish-check-report.json
 smoke-test-report.json
 se-quality-report.json
+
+# Local catalog snapshots and development-only probes
+assets/daily-selections.json
+tests/*_probe.py
+tests/*_observer.py
+tests/*_audit.py
+tests/full_check_*.py
+tests/network_smoke.py

@@ -51,6 +51,32 @@ class ConcurrentJobsTests(unittest.TestCase):
         while jobs.busy() and time.monotonic()<deadline:time.sleep(.01)
         self.assertFalse(jobs.busy())
 
+    def test_disk_scan_reuses_job_blocks_moves_and_allows_stop(self):
+        jobs = web_jobs.Jobs(self.a)
+        self.m.db.execute('insert into maintenance_space_catalogs values(?,?,?)', ('concurrency-catalog',maintenance.stamp(),json.dumps({'projects':[{'id':'project','path':str(self.base/'work')}]})))
+        self.m.db.commit()
+        request = {'action':'disk-scan','catalog_id':'concurrency-catalog','ids':['project'],'agents':['codex']}
+        started, release = threading.Event(), threading.Event()
+        def delayed(m, request):
+            if request['action'] == 'disk-scan':
+                started.set()
+                release.wait(4)
+            return {}
+        with patch.object(maintenance, 'dispatch', delayed):
+            first = jobs.start(request)
+            try:
+                self.assertTrue(started.wait(2))
+                self.assertEqual(jobs.start(request)['id'], first['id'])
+                with self.assertRaises(web_jobs.BusyError):
+                    jobs.start({**request,'agents':['claude_code']})
+                with self.assertRaises(web_jobs.BusyError):
+                    jobs.start({'action': 'space-trash', 'confirmed': True})
+                stop = jobs.start({'action': 'disk-stop'})
+                self.assertNotEqual(stop['id'], first['id'])
+            finally:
+                release.set()
+                self.finish(jobs)
+
     def test_check_refresh_and_discovery_run_together(self):
         jobs=web_jobs.Jobs(self.a); release=threading.Event(); gates={a:threading.Event() for a in ('check','inventory','discover-sources')}
         def delayed(m,p):

@@ -7,10 +7,10 @@ from pathlib import Path
 
 NETWORK = {'discovery-refresh','discovery-verify','translate-descriptions','check','check-many','discover-sources','discover-sources-batch','probe-source',
            'install-identify','preview','preview-library-many'}
-READS = NETWORK | {'uninstall-references','cache-inspect','inventory','duplicate-review','inspect-space','directory-preview',
+READS = NETWORK | {'project-analyze','project-analysis-stop','space-catalog','space-add-project','space-advice','disk-scan','disk-report','disk-stop','space-scan','space-results','space-trash-list','uninstall-references','cache-inspect','inventory','duplicate-review','inspect-space','directory-preview',
                    'classification-preview','verify-backup','backup-detail','backups','usage',
                    'history','plans','get-plan','install-roots','open-folder','taxonomy','source-search-policy'}
-COMMITS = {'cache-clean','execute','execute-library-many','execute-backups','execute-restore-many','empty-trash',
+COMMITS = {'space-trash','space-restore','space-purge','space-trash-batch','space-restore-many','trash-purge-many','cache-clean','execute','execute-library-many','execute-backups','execute-restore-many','empty-trash',
            'update-now','apply','apply-library-many','apply-restore-many','apply-purge-many','backup',
            'recover','import-backup','create-snapshot','import-snapshot','export-backup'}
 
@@ -26,6 +26,22 @@ def describe(legacy, request):
     result={'write':write,'resources':[], 'global':False, 'catalog':action=='scan', 'operation':request.get('operation'),
             'lane':'network' if action in NETWORK else 'inventory' if action=='inventory' else 'local'}
     if action == 'update-now': result['operation'] = 'update'
+    if action in ('disk-scan','project-analyze'):
+        if legacy.DB_PATH.exists():
+            with closing(sqlite3.connect(legacy.DB_PATH.as_uri()+'?mode=ro',uri=True,timeout=2)) as db:
+                if action == 'project-analyze':
+                    row = db.execute('select payload from maintenance_disk_scans where id=?', (request.get('report_id'),)).fetchone()
+                    selected = request.get('context_paths', request.get('paths', []))
+                    payload = json.loads(row[0]) if row else {}
+                    result['resources'] = [p['path'] for p in payload.get('projects', []) if request.get('scope') == 'known' or p['path'] in selected]
+                elif request.get('rescan'):
+                    row = db.execute("select payload from maintenance_disk_scans where json_extract(payload,'$.mode')='project_space' order by created_at desc,rowid desc limit 1").fetchone()
+                    result['resources'] = [p['path'] for p in json.loads(row[0])['projects']] if row else []
+                else:
+                    row = db.execute('select payload from maintenance_space_catalogs where id=?', (request.get('catalog_id'),)).fetchone()
+                    selected = request.get('ids', [])
+                    result['resources'] = [p['path'] for p in json.loads(row[0])['projects'] if p['id'] in selected] if row else []
+        return result
     def add(raw):
         if not raw: return
         path=Path(raw).expanduser().absolute()
@@ -35,6 +51,20 @@ def describe(legacy, request):
         return result
     with closing(sqlite3.connect(legacy.DB_PATH.as_uri()+'?mode=ro',uri=True,timeout=2)) as db:
         db.row_factory=sqlite3.Row
+        if action in ('space-advice', 'space-trash-batch'):
+            row=db.execute('select payload from maintenance_disk_scans where id=?',(request.get('report_id'),)).fetchone()
+            chosen=request.get('paths',[])
+            if row and isinstance(chosen,list):
+                for project in json.loads(row[0]).get('projects',[]):
+                    if project['path'] in chosen:add(project['path'])
+            if action=='space-trash-batch':add(legacy.APP_DIR/'space-trash')
+        if action in ('space-restore-many','space-purge','trash-purge-many'):
+            chosen=request.get('artifact_ids',[]) if action=='trash-purge-many' else request.get('ids',[])
+            if isinstance(chosen,list):
+                for row in db.execute('select id,payload from maintenance_space_trash'):
+                    if row['id'] in chosen:
+                        item=json.loads(row['payload']);add(item.get('stored'))
+                        if action=='space-restore-many':add(item.get('original'))
         def target(selector):
             if not isinstance(selector,str) or not selector: return
             rows=db.execute('select path from capabilities where id=? or path=? or name=?',

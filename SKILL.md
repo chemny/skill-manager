@@ -2,7 +2,7 @@
 name: skill-manager
 description: Manage locally installed agent skills across Codex, Claude Code, Hermes and configured roots. Use when users need inventory, source-bound update checks, safe updates, cleanup, history, backup verification or recovery.
 metadata:
-  version: "1.4.0"
+  version: "1.5.0"
 ---
 
 # Agent Skill Manager
@@ -32,6 +32,8 @@ metadata:
 - “查看空间构成”只读统计第一层文件/目录，不跟随软链接。依赖、缓存、任务输出和版本记录按目录名分类供人工核对，不是安全清理判定。没有使用日志不判定闲置。
 
 ## 日常命令
+
+空间清理使用 Web 后台的“扫描项目 → 勾选项目批量分析 → 清理建议 → 回收站”流程。扫描范围和排除项保存在本机；不自动清理、不扫描整块磁盘、不调用模型 API。分别核实空间、重复内容与路径引用的完成状态；大文本分块检查并保存续查进度，未核实不能当作未使用，内容相同不能当作路径可删除。项目文件与 Skills 共用左侧回收站入口，移入、恢复和永久删除均保留独立的后台校验。详见 [项目空间清理](references/project-space.md)。
 
 ```bash
 asm scan

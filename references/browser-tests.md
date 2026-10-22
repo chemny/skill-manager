@@ -19,3 +19,9 @@ using PowerShell before invoking Node.
 The browser fixtures use temporary installation and data directories, not the
 running personal management service. Live probes are separate utilities and
 must not be used as automatic destructive release tests.
+
+`node tests/browser_project_space.cjs` verifies project selection, remembered
+exclusions, rescanning, batch analysis, reload recovery, checkbox-only selection,
+single-line project rows and cleanup impacts. Its disposable projects also cover
+cancelled moves, confirmed moves, restore conflicts and confirmed trash purges.
+Desktop and mobile viewports are checked without touching real user projects.

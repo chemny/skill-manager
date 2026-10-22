@@ -25,6 +25,7 @@ The local Web UI is the main entry point. An Agent can also use the Python CLI. 
 | Categories and tags | Automatically fill missing categories or tags, adjust them manually, and filter or sort the list directly. |
 | Local history | Inspect failed or interrupted operations and export diagnostic records when troubleshooting. |
 | Cache cleanup | Inspect and remove the manager's expired temporary files without touching installed Skills or backups. |
+| Project space cleanup | Scan selected Agent projects, rank their disk use, analyze selected projects together, and review duplicate-media and cache suggestions with their impact. Confirmed files go to the existing recycle bin. |
 
 ## Installation
 
@@ -104,6 +105,18 @@ The store provides rankings, categories and title search using public catalog da
 
 ## How It Works
 
+### Review Project Space
+
+Open **Space cleanup**, click **Scan projects**, and choose the detected Agents and project locations. The manager remembers your selections and exclusions. Rescanning updates only the projects already added; scanning projects again lets you select newly discovered locations.
+
+Sort projects by disk use, select the projects to inspect, and run **Analyze selected projects**. Suggestions show the content, file count, size and deletion impact. Nothing is selected or removed automatically. Confirmed items enter the existing recycle bin; restoring does not overwrite files, and permanent deletion requires a separate confirmation.
+
+Analysis checks identical content and local path references while protecting original inputs, model files and known model dependencies. Large-text checks stream in bounded chunks and can continue from cached progress on a later analysis. Space statistics, duplicate checks and reference checks have separate completion states. A partial result remains partial; finding no reference does not prove a file is unused, and removing an identical copy can still break historical previews. Candidate size is not a promise of disk space reclaimed.
+
+Project discovery supports Codex, Claude Code, Cursor, Windsurf and OpenClaw metadata where available; actual project analysis has been exercised with Codex on macOS. Safe project-file moves require POSIX directory and no-follow support; Windows project-file moves are currently unavailable. See [project cleanup rules and supported scope](references/project-space.md).
+
+### Local Data and Maintenance
+
 The manager scans configured directories and records installed items, source evidence, update results and operation history in SQLite. The browser reuses inventory data for 15 minutes and backup-list data for one hour. Discovery results and translated summaries are cached locally; remote catalog and GitHub requests are rate-limited and can fail independently. Writes refresh affected records.
 
 | Component | Responsibility |
@@ -111,6 +124,7 @@ The manager scans configured directories and records installed items, source evi
 | `SKILL.md` | Instructions for an Agent using the manager. |
 | `scripts/agent_skill_manager.py` and `bin/asm` | Python CLI, local Web server and macOS/POSIX command wrapper. Windows can invoke the Python script directly. |
 | `assets/maintenance.html` | Home, inventory, discovery, updates, installation, backups, recycle bin and settings UI. |
+| `assets/project-space.html` and `assets/project-space.js` | Project scanning, space ranking, batch analysis, cleanup suggestions and project recycle-bin controls. |
 | Maintenance modules in `scripts/` | Source checks, ownership rules, file validation, backups, task execution and recovery. |
 
 The service binds to the local loopback interface and uses a local request token. Data stays in `~/.agent-skill-manager` by default; `ASM_HOME` selects an isolated data directory. Discovery, source searches and update checks contact public providers. The local translation option calls Ollama on loopback. Diagnostics may contain local paths, so review exported reports before sharing.
@@ -124,6 +138,8 @@ SKILL.md                         Agent instructions
 scripts/                         CLI, server and maintenance modules
 bin/asm                          POSIX command wrapper
 assets/maintenance.html          Management UI
+assets/project-space.html        Project space UI
+assets/project-space.js          Project space interactions
 assets/skill-manager-preview.png Home-page screenshot with sample data
 references/                      Usage, API and attribution documents
 tests/                           Isolated automated tests

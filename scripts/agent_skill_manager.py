@@ -4742,7 +4742,10 @@ class AdminHandler(http.server.BaseHTTPRequestHandler):
             return
         if urllib.parse.urlparse(self.path).path == "/manage":
             target = Path(__file__).resolve().parent.parent / "assets" / "maintenance.html"
-            data = target.read_text(encoding="utf-8").replace("__ASM_TOKEN__", self.server.api_token).encode("utf-8")
+            page = target.read_text(encoding="utf-8")
+            page = page.replace("<!-- __PROJECT_SPACE_MARKUP__ -->", (target.parent / "project-space.html").read_text(encoding="utf-8"))
+            page = page.replace("/* __PROJECT_SPACE_JS__ */", (target.parent / "project-space.js").read_text(encoding="utf-8"))
+            data = page.replace("__ASM_TOKEN__", self.server.api_token).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))

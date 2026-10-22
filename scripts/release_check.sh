@@ -32,6 +32,7 @@ PY
 if command -v node >/dev/null 2>&1; then
   node --check "$CHECK_DIR/asm-ui.js"
   node --check "$CHECK_DIR/asm-maintenance-ui.js"
+  node --check assets/project-space.js
 else
   echo "release check failed: node is required for JavaScript syntax validation" >&2
   exit 1
