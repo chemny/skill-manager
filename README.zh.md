@@ -10,7 +10,7 @@ Agent Skill Manager 把本机安装的 Skills 集中到一个管理页面。适�
 
 ## 效果预览
 
-![首页示例数据，展示本机概览、榜单和 Skills 商店](assets/skill-manager-preview.png)
+![首页演示，展示已安装 Skills 概览和发现榜单](assets/skill-manager-preview.png)
 
 ## 核心功能
 
@@ -26,6 +26,16 @@ Agent Skill Manager 把本机安装的 Skills 集中到一个管理页面。适�
 | 操作记录 | 查看失败或中断的操作，需要排查时导出诊断记录。 |
 | 缓存清理 | 查看并清理管理器过期的临时文件，不触碰已安装 Skills 和备份。 |
 | 项目空间清理 | 扫描选中的 Agent 项目、按磁盘占用排行，批量分析选中项目，查看重复素材和缓存建议及删除影响；确认后移入现有回收站。 |
+
+### Skills 管理列表
+
+![Skills 管理列表，展示名称、Agent 关联及维护操作](assets/skill-manager-list.png)
+
+### 空间清理建议
+
+![项目清理建议，展示文件数量、占用空间和删除影响](assets/skill-manager-cleanup.png)
+
+截图使用演示数据，清理候选占用不等于保证可释放空间。
 
 ## 安装
 

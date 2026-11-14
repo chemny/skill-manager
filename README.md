@@ -10,7 +10,7 @@ The local Web UI is the main entry point. An Agent can also use the Python CLI. 
 
 ## Preview
 
-![Home page with sample data showing installed Skills, rankings and the Skill store](assets/skill-manager-preview.png)
+![Home page with sample data showing installed Skills and discovery rankings](assets/skill-manager-preview.png)
 
 ## Features
 
@@ -26,6 +26,16 @@ The local Web UI is the main entry point. An Agent can also use the Python CLI. 
 | Local history | Inspect failed or interrupted operations and export diagnostic records when troubleshooting. |
 | Cache cleanup | Inspect and remove the manager's expired temporary files without touching installed Skills or backups. |
 | Project space cleanup | Scan selected Agent projects, rank their disk use, analyze selected projects together, and review duplicate-media and cache suggestions with their impact. Confirmed files go to the existing recycle bin. |
+
+### Skills Management
+
+![Skills list showing names, Agent associations and maintenance controls](assets/skill-manager-list.png)
+
+### Cleanup Suggestions
+
+![Project cleanup suggestions showing file counts, size and removal impact](assets/skill-manager-cleanup.png)
+
+Screenshots use sample data. Suggested sizes are not a guarantee of disk space reclaimed.
 
 ## Installation
 
